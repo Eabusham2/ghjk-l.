@@ -1,0 +1,13 @@
+# Sound Detection Game Overlay – Python dependencies
+#
+# Install:  pip install -r requirements.txt
+# Build EXE: build.bat
+
+# Audio capture (WASAPI loopback on Windows)
+sounddevice>=0.4.6
+
+# Numerical / DSP
+numpy>=1.24
+
+# PyInstaller – converts the project to a standalone .exe
+pyinstaller>=6.0
