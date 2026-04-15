@@ -1,147 +1,165 @@
-# Sound Detection Game Overlay
+# SoundOverlay
 
-A transparent, always-on-top radar overlay for Windows that listens to your
-system audio, detects in-game sounds (footsteps, gunshots, vehicles), and
-shows you the **direction** of each sound on a circular compass.
+A native C / Win32 application that captures the audio your PC is already
+playing (WASAPI loopback), runs FFT-based analysis on it, and displays a
+transparent, click-through, always-on-top HUD that shows the direction of
+**footsteps** and **gunshots** in games such as Fortnite, Apex, Warzone,
+CS2, etc.
 
-Works with Fortnite, Warzone, Apex Legends, PUBG, and any other game that
-outputs stereo audio through Windows.
+It is an accessibility / awareness tool. It does **not** read game memory,
+inject into the game, or interact with the game — it only analyzes the
+audio that the game has already sent to your speakers.
 
----
+## Features
 
-## What It Detects
+- **WASAPI loopback** capture of any active render endpoint (default
+  speakers, a specific headset, etc.) without a virtual cable.
+- **Accurate detection** pipeline:
+  - 2048-sample Hann-windowed FFT at 48 kHz (1024-sample hop, 50% overlap).
+  - Four-band power analysis (low 40-220 Hz, mid 300-1200 Hz,
+    high 1.5-6 kHz, ultra 6-12 kHz).
+  - **Spectral flux onset detection** in the high band to catch the
+    broadband transient of a gunshot's crack + snap.
+  - **Adaptive per-band noise floor** (exponential moving average) so
+    the detector self-calibrates to each game's mix within a few
+    seconds.
+  - **Refractory periods** to avoid repeated triggers from the same
+    event.
+  - Stereo-pan direction from energy-weighted L/R ratio on the windowed
+    signal.
+- **GUI settings window** (standard Win32 controls) with:
+  - Audio device combobox
+  - Sensitivity slider (0.5x .. 2.0x threshold multiplier)
+  - Overlay size slider (200 .. 600 px)
+  - Overlay position (top-right / top-left / bottom-right / bottom-left /
+    center)
+  - Show-overlay checkbox
+  - Start / Stop buttons
+- **Transparent overlay** using `WS_EX_LAYERED | WS_EX_TRANSPARENT |
+  WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` with chroma-key
+  transparency, drawn via double-buffered GDI at ~30 fps.
+- **Global hotkey**: `Ctrl + F10` to quit.
 
-| Icon | Sound | How |
-|------|-------|-----|
-| `◆` | Footstep | Mid-bass spike (80–500 Hz) above ambient noise |
-| `○` | Gunshot  | Loud transient with broadband high-frequency content |
-| `⬡` | Vehicle  | Sustained sub-bass rumble (30–200 Hz) |
+No external dependencies beyond the Windows SDK — pure C, pure Win32.
 
-**Direction** is derived from the left / right stereo balance — sounds panned
-hard-left appear on the left side of the compass, right-panned sounds on the
-right.
+## Source layout
 
----
-
-## Quick Start
-
-### Run from source
-
-```bash
-# 1. Install Python 3.10+ (https://www.python.org)
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Launch overlay
-python main.py
+```
+fft.c/h        Radix-2 in-place FFT.
+audio.c/h      WASAPI loopback capture + ring buffer + downmix + resample.
+detector.c/h   FFT-based footstep / gunshot classifier.
+overlay.c/h    Layered click-through HUD window (GDI).
+main.c         Settings window, hotkey, thread orchestration (WinMain).
+build.bat      MSVC build.
+build-mingw.bat Alternative mingw-w64 build.
 ```
 
-### Build a standalone EXE
+## Building
 
-```bat
-pip install -r requirements.txt
+### With MSVC (recommended)
+
+Open *x64 Native Tools Command Prompt for VS 2019/2022* (or run
+`vcvars64.bat` inside any cmd), then:
+
+```
 build.bat
 ```
 
-The compiled binary appears at `dist\SoundOverlay.exe` — no Python installation
-required on the target PC.
+The binary is produced at `build\SoundOverlay.exe`. It is statically
+linked to the CRT (`/MT`), subsystem `WINDOWS` (no console), and needs
+no runtime dependencies on the target machine.
 
----
+### With mingw-w64
 
-## Command-Line Options
-
-```
-python main.py [options]
-
-  --pos    {bottom,top,left,right,center}   Radar position  (default: bottom)
-  --size   N                                Radar diameter in px (default: 260)
-  --alpha  0.0–1.0                          Window opacity    (default: 0.88)
-  --fade   seconds                          Indicator lifetime (default: 2.5)
-```
-
-Examples:
-```bat
-# Put the radar in the top-right area, slightly more transparent
-python main.py --pos top --alpha 0.7
-
-# Bigger radar, indicators stay longer
-python main.py --size 320 --fade 3.5
-```
-
----
-
-## Controls (in-game)
-
-| Action | Shortcut |
-|--------|----------|
-| Move overlay | Right-click drag |
-| Quit | `Escape` or middle-click |
-
----
-
-## How It Works
+From an MSYS2 `mingw64` shell or any shell with `x86_64-w64-mingw32-gcc`
+aliased to `gcc`:
 
 ```
- Windows speakers / headphones
-          │
-          ▼
-  AudioCapture (WASAPI loopback)
-          │  raw stereo float32 chunks
-          ▼
-  SoundAnalyzer (numpy FFT)
-    • amplitude spike detection
-    • frequency band analysis
-    • L/R channel balance → direction
-          │  SoundEvent objects
-          ▼
-  Overlay (tkinter + ctypes)
-    • transparent layered window
-    • WS_EX_TRANSPARENT → click-through
-    • WS_EX_TOPMOST → above game
-    • compass compass with fading indicators
+build-mingw.bat
 ```
 
-### WASAPI Loopback
+## Running
 
-The overlay uses Windows Audio Session API (WASAPI) loopback to capture
-whatever is playing through your audio device — this includes game audio
-without needing any special driver or game integration.
+Double-click `SoundOverlay.exe`. The settings window appears:
 
-If your audio device does not expose a loopback endpoint automatically, enable
-**Stereo Mix** in Windows Sound settings:
+1. Pick the audio device that your game plays through (the first entry
+   tagged `[default]` is what Windows is using right now).
+2. Leave **Sensitivity** at `1.0x` for a first try. Lower = more
+   triggers, higher = fewer.
+3. Pick a size / position for the HUD.
+4. Click **Start**. The compass-shaped overlay appears and begins
+   lighting up green (`STEP`) and red (`SHOT`) markers as events are
+   detected.
 
-1. Right-click the speaker icon → Sound settings
-2. Recording tab → right-click blank area → *Show Disabled Devices*
-3. Enable **Stereo Mix**
+Quit with **Ctrl + F10** or by closing the settings window.
 
----
+## How it works
 
-## Tuning Detection Sensitivity
+### Capture (`audio.c`)
 
-Edit `config.py` to adjust thresholds:
+WASAPI is initialised in **shared, loopback** mode against the selected
+render endpoint. The audio thread pulls packets with
+`IAudioCaptureClient::GetBuffer`, detects the mix format from the
+endpoint's `WAVEFORMATEXTENSIBLE`, downmixes 1 / 2 / 5.1 / 7.1 layouts
+to stereo using ITU-775-style weights, linearly resamples to 48 kHz if
+the endpoint runs at a different rate, and pushes the stereo float
+frames into a 1-second ring buffer protected by a critical section.
 
-```python
-GUNSHOT_AMPLITUDE_THRESH  = 0.45   # lower = more sensitive to gunshots
-FOOTSTEP_AMPLITUDE_THRESH = 0.04   # lower = more sensitive to footsteps
-GUNSHOT_COOLDOWN_SEC      = 0.35   # increase if gunshots double-trigger
-FOOTSTEP_COOLDOWN_SEC     = 0.22   # increase if footsteps flood the radar
-```
+### Detection (`detector.c`)
 
----
+For each 2048-sample window (1024-sample hop):
 
-## Requirements
+1. Sum to mono, apply Hann window, run the radix-2 FFT in `fft.c`.
+2. Compute magnitude spectrum; integrate power across four bands and
+   compute positive spectral flux (current - previous magnitude,
+   clipped at zero) in the high band.
+3. Update per-band exponential noise floors (alpha = 0.02, ~0.7 s time
+   constant).
+4. Compute per-band ratios vs. their floors. Classify:
+   - **Gunshot** = big high-band flux + elevated high band + elevated
+     ultra band + minimum absolute loudness gate, with 130 ms
+     refractory.
+   - **Footstep** = elevated low band + positive low-band flux + low
+     dominance over high band + moderate mid band, with 100 ms
+     refractory.
+5. Stereo pan estimated via `(rms_r - rms_l) / (rms_r + rms_l)` on the
+   windowed signals.
 
-- Windows 10 / 11
-- Python 3.10+ (or use the pre-built EXE)
-- `sounddevice`, `numpy` (installed via `requirements.txt`)
+### Overlay (`overlay.c`)
 
----
+A `WS_POPUP` layered window sized `size_px * size_px`, positioned by
+choice of five anchors, with:
 
-## Limitations
+- `WS_EX_LAYERED` + `SetLayeredWindowAttributes(..., LWA_COLORKEY)` for
+  chroma-keyed transparency (cheap, no per-pixel alpha needed).
+- `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE` so the window is click-through
+  and never steals focus.
+- `WS_EX_TOPMOST | WS_EX_TOOLWINDOW` so it floats above full-screen
+  windowed / borderless games without a taskbar icon.
+- A 33 ms timer forces redraws; GDI draws to an offscreen DC that is
+  `BitBlt`-ed to the window for flicker-free double buffering.
+- Events fade linearly over 1.4 s. Pan maps to an angle on the forward
+  hemisphere of the compass.
 
-- **Direction resolution**: Only left/right is derived from standard stereo.
-  Front/back differentiation requires HRTF or surround sound metadata.
-- **Game audio mixing**: If the game uses dynamic audio compression or mono
-  mixing, channel balance may not reflect actual in-game direction precisely.
-- **Detection accuracy**: Thresholds are tuned for typical shooter audio; very
-  quiet sounds or extremely compressed audio streams may be missed.
+## Tuning tips
+
+- **Too many false triggers** on music / explosions: raise sensitivity
+  toward `1.5x`.
+- **Missed footsteps**: lower sensitivity toward `0.7x`.
+- Disable game and Windows "surround virtualization" effects on stereo
+  output so L/R direction stays crisp.
+- If you play with a 5.1 / 7.1 output device selected in Windows, the
+  downmix is done internally; direction is still meaningful but
+  front/back cues collapse into the left/right axis (stereo can't
+  resolve them).
+
+## Known limitations
+
+- Stereo pan cannot distinguish front from back. A true surround
+  capture path (7.1 WASAPI shared mode without downmix) is a natural
+  extension.
+- Heuristic detectors always have false positives on unusual audio
+  (nearby explosions, music stingers with strong kicks). A small
+  ML classifier trained on labeled game audio would improve precision.
+- Windows only. The overlay relies on Win32 layered windows and WASAPI
+  loopback.
