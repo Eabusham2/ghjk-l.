@@ -15,16 +15,44 @@ static double now_seconds(const SoundDetector *d) {
     return (double)c.QuadPart / d->qpc_freq;
 }
 
-int detector_init(SoundDetector *d, float sensitivity) {
+static void apply_profile_params(SoundDetector *d, const GameProfile *p) {
+    d->foot_lo = p->foot_lo; d->foot_hi = p->foot_hi;
+    d->gun_lo  = p->gun_lo;  d->gun_hi  = p->gun_hi;
+    d->gun_ultra_lo = p->gun_ultra_lo; d->gun_ultra_hi = p->gun_ultra_hi;
+    d->veh_lo  = p->veh_lo;  d->veh_hi  = p->veh_hi;
+    d->expl_lo = p->expl_lo; d->expl_hi = p->expl_hi;
+
+    d->foot_thresh      = p->foot_thresh;
+    d->gun_flux_thresh  = p->gun_flux_thresh;
+    d->gun_power_thresh = p->gun_power_thresh;
+    d->gun_ultra_thresh = p->gun_ultra_thresh;
+    d->veh_thresh       = p->veh_thresh;
+    d->expl_thresh      = p->expl_thresh;
+
+    d->foot_cooldown = p->foot_cooldown;
+    d->gun_cooldown  = p->gun_cooldown;
+    d->veh_cooldown  = p->veh_cooldown;
+    d->expl_cooldown = p->expl_cooldown;
+
+    d->nf_alpha = p->nf_alpha;
+    d->warmup   = p->warmup;
+
+    d->enable_foot = p->enable_foot;
+    d->enable_gun  = p->enable_gun;
+    d->enable_veh  = p->enable_veh;
+    d->enable_expl = p->enable_expl;
+}
+
+int detector_init(SoundDetector *d, const GameProfile *profile, float sensitivity) {
     if (!d) return -1;
     memset(d, 0, sizeof(*d));
     if (fft_init(&d->fft, AUDIO_FFT_FRAMES) != 0) return -1;
 
     size_t n = AUDIO_FFT_FRAMES;
-    d->bins   = n / 2 + 1;
-    d->window = (float *)malloc(sizeof(float) * n);
-    d->scr_re = (float *)malloc(sizeof(float) * n);
-    d->scr_im = (float *)malloc(sizeof(float) * n);
+    d->bins     = n / 2 + 1;
+    d->window   = (float *)malloc(sizeof(float) * n);
+    d->scr_re   = (float *)malloc(sizeof(float) * n);
+    d->scr_im   = (float *)malloc(sizeof(float) * n);
     d->mag_prev = (float *)calloc(d->bins, sizeof(float));
     d->mag_curr = (float *)calloc(d->bins, sizeof(float));
     if (!d->window || !d->scr_re || !d->scr_im || !d->mag_prev || !d->mag_curr) {
@@ -32,14 +60,15 @@ int detector_init(SoundDetector *d, float sensitivity) {
         return -1;
     }
 
-    /* Hann window. */
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n; ++i)
         d->window[i] = 0.5f * (1.0f - cosf((float)(2.0 * M_PI * (double)i / (double)(n - 1))));
-    }
 
-    d->nf_low = d->nf_mid = d->nf_high = d->nf_ultra = 1e-8f;
-    d->nf_flux = 1e-6f;
+    d->nf_foot = d->nf_gun = d->nf_gun_ultra = 1e-8f;
+    d->nf_veh  = d->nf_expl = 1e-8f;
+    d->nf_flux_gun = d->nf_flux_foot = 1e-6f;
     d->sensitivity = sensitivity > 0.05f ? sensitivity : 1.0f;
+
+    apply_profile_params(d, profile ? profile : profile_by_index(0));
 
     LARGE_INTEGER f;
     QueryPerformanceFrequency(&f);
@@ -64,23 +93,40 @@ void detector_set_sensitivity(SoundDetector *d, float s) {
     d->sensitivity = s;
 }
 
-/* Mean power of bins in [f0, f1) Hz, applied to a magnitude spectrum. */
+void detector_apply_profile(SoundDetector *d, const GameProfile *p) {
+    if (!d || !p) return;
+    apply_profile_params(d, p);
+    d->nf_foot = d->nf_gun = d->nf_gun_ultra = 1e-8f;
+    d->nf_veh  = d->nf_expl = 1e-8f;
+    d->nf_flux_gun = d->nf_flux_foot = 1e-6f;
+    d->frame_count = 0;
+}
+
+void detector_set_enable(SoundDetector *d, SoundEventKind kind, int on) {
+    if (!d) return;
+    switch (kind) {
+        case SE_FOOTSTEP:  d->enable_foot = on; break;
+        case SE_GUNSHOT:   d->enable_gun  = on; break;
+        case SE_VEHICLE:   d->enable_veh  = on; break;
+        case SE_EXPLOSION: d->enable_expl = on; break;
+    }
+}
+
 static float band_power(const float *mag, size_t bins,
                         float bin_hz, float f0, float f1) {
+    if (f0 >= f1 || f1 <= 0) return 0.0f;
     size_t k0 = (size_t)(f0 / bin_hz);
     size_t k1 = (size_t)(f1 / bin_hz);
     if (k1 > bins) k1 = bins;
     if (k0 >= k1) return 0.0f;
     double s = 0.0;
-    for (size_t k = k0; k < k1; ++k) {
-        s += (double)mag[k] * (double)mag[k];
-    }
+    for (size_t k = k0; k < k1; ++k) s += (double)mag[k] * (double)mag[k];
     return (float)(s / (double)(k1 - k0));
 }
 
-/* Positive spectral flux in [f0, f1) Hz. */
 static float band_flux(const float *prev, const float *curr, size_t bins,
                        float bin_hz, float f0, float f1) {
+    if (f0 >= f1 || f1 <= 0) return 0.0f;
     size_t k0 = (size_t)(f0 / bin_hz);
     size_t k1 = (size_t)(f1 / bin_hz);
     if (k1 > bins) k1 = bins;
@@ -93,6 +139,12 @@ static float band_flux(const float *prev, const float *curr, size_t bins,
     return (float)(s / (double)(k1 - k0));
 }
 
+static float clamp_strength(float v) {
+    if (v < 1.0f) return 1.0f;
+    if (v > 3.0f) return 3.0f;
+    return v;
+}
+
 int detector_analyze(SoundDetector *d,
                      const float *left,
                      const float *right,
@@ -102,49 +154,48 @@ int detector_analyze(SoundDetector *d,
 
     size_t n = AUDIO_FFT_FRAMES;
 
-    /* Mono mix, windowed. */
     for (size_t i = 0; i < n; ++i) {
         d->scr_re[i] = 0.5f * (left[i] + right[i]) * d->window[i];
         d->scr_im[i] = 0.0f;
     }
-    /* FFT directly (avoid extra copy in fft_magnitude_real). */
     fft_forward(&d->fft, d->scr_re, d->scr_im);
 
     float *prev = d->mag_prev;
     float *curr = d->mag_curr;
     for (size_t k = 0; k < d->bins; ++k) {
-        float r = d->scr_re[k];
-        float ii = d->scr_im[k];
+        float r = d->scr_re[k], ii = d->scr_im[k];
         curr[k] = sqrtf(r * r + ii * ii);
     }
 
     float bin_hz = (float)AUDIO_SAMPLE_RATE / (float)n;
 
-    float p_low   = band_power(curr, d->bins, bin_hz,   40.0f,   220.0f);
-    float p_mid   = band_power(curr, d->bins, bin_hz,  300.0f,  1200.0f);
-    float p_high  = band_power(curr, d->bins, bin_hz, 1500.0f,  6000.0f);
-    float p_ultra = band_power(curr, d->bins, bin_hz, 6000.0f, 12000.0f);
+    float p_foot  = band_power(curr, d->bins, bin_hz, d->foot_lo, d->foot_hi);
+    float p_gun   = band_power(curr, d->bins, bin_hz, d->gun_lo,  d->gun_hi);
+    float p_gun_u = band_power(curr, d->bins, bin_hz, d->gun_ultra_lo, d->gun_ultra_hi);
+    float p_veh   = band_power(curr, d->bins, bin_hz, d->veh_lo,  d->veh_hi);
+    float p_expl  = band_power(curr, d->bins, bin_hz, d->expl_lo, d->expl_hi);
 
-    /* Spectral flux focused on gunshot / transient range. */
-    float flux_high = band_flux(prev, curr, d->bins, bin_hz, 1500.0f, 8000.0f);
-    float flux_low  = band_flux(prev, curr, d->bins, bin_hz,   40.0f,  220.0f);
+    float flux_gun  = band_flux(prev, curr, d->bins, bin_hz, d->gun_lo, d->gun_ultra_hi);
+    float flux_foot = band_flux(prev, curr, d->bins, bin_hz, d->foot_lo, d->foot_hi);
+    float flux_expl = band_flux(prev, curr, d->bins, bin_hz, d->expl_lo, d->expl_hi);
 
-    /* Adaptive noise floors. Alpha is slow so we don't eat transients. */
-    const float a = 0.02f;
-    d->nf_low    = (1.0f - a) * d->nf_low    + a * p_low;
-    d->nf_mid    = (1.0f - a) * d->nf_mid    + a * p_mid;
-    d->nf_high   = (1.0f - a) * d->nf_high   + a * p_high;
-    d->nf_ultra  = (1.0f - a) * d->nf_ultra  + a * p_ultra;
-    d->nf_flux   = (1.0f - a) * d->nf_flux   + a * flux_high;
+    float a = d->nf_alpha;
+    d->nf_foot      = (1.0f - a) * d->nf_foot      + a * p_foot;
+    d->nf_gun       = (1.0f - a) * d->nf_gun       + a * p_gun;
+    d->nf_gun_ultra = (1.0f - a) * d->nf_gun_ultra + a * p_gun_u;
+    d->nf_veh       = (1.0f - a) * d->nf_veh       + a * p_veh;
+    d->nf_expl      = (1.0f - a) * d->nf_expl      + a * p_expl;
+    d->nf_flux_gun  = (1.0f - a) * d->nf_flux_gun  + a * flux_gun;
+    d->nf_flux_foot = (1.0f - a) * d->nf_flux_foot + a * flux_foot;
 
-    float r_low    = p_low    / (d->nf_low    + 1e-12f);
-    float r_mid    = p_mid    / (d->nf_mid    + 1e-12f);
-    float r_high   = p_high   / (d->nf_high   + 1e-12f);
-    float r_ultra  = p_ultra  / (d->nf_ultra  + 1e-12f);
-    float r_fluxH  = flux_high/ (d->nf_flux   + 1e-12f);
+    float r_foot  = p_foot  / (d->nf_foot      + 1e-12f);
+    float r_gun   = p_gun   / (d->nf_gun       + 1e-12f);
+    float r_gun_u = p_gun_u / (d->nf_gun_ultra + 1e-12f);
+    float r_veh   = p_veh   / (d->nf_veh       + 1e-12f);
+    float r_expl  = p_expl  / (d->nf_expl      + 1e-12f);
+    float r_fluxG = flux_gun / (d->nf_flux_gun + 1e-12f);
 
-    /* Directional estimate from energy-weighted L/R difference on the
-     * windowed signals. */
+    /* Stereo pan. */
     double sl = 0.0, sr = 0.0;
     for (size_t i = 0; i < n; ++i) {
         float wl = left[i]  * d->window[i];
@@ -158,71 +209,76 @@ int detector_analyze(SoundDetector *d,
     if (pan < -1.0f) pan = -1.0f;
     if (pan >  1.0f) pan =  1.0f;
 
+    /* Warmup guard. */
+    d->frame_count++;
+    if (d->frame_count < (unsigned)d->warmup) {
+        float *tw = d->mag_prev; d->mag_prev = d->mag_curr; d->mag_curr = tw;
+        return 0;
+    }
+
     int emitted = 0;
     double now = now_seconds(d);
     float s = d->sensitivity;
 
-    /* Suppress classification until the adaptive floors have had time
-     * to converge; with alpha=0.02 that's a few dozen frames. */
-    d->frame_count++;
-    if (d->frame_count < 40) {
-        float *tmp_w = d->mag_prev;
-        d->mag_prev = d->mag_curr;
-        d->mag_curr = tmp_w;
-        return 0;
-    }
-
-    /* Gunshot criteria:
-     *   1. Huge positive spectral flux in high band (broadband onset)
-     *   2. High-band energy significantly above its floor
-     *   3. Ultra-high band also elevated (crack transient)
-     *   4. Minimum absolute loudness gate
-     */
-    if (emitted < max_events
-        && r_fluxH > 6.0f * s
-        && r_high  > 4.0f * s
-        && r_ultra > 2.5f * s
-        && (p_high + p_ultra) > 1e-4f
-        && (now - d->last_gunshot_s) > 0.13) {
+    /* Gunshot */
+    if (d->enable_gun && emitted < max_events
+        && r_fluxG > d->gun_flux_thresh * s
+        && r_gun   > d->gun_power_thresh * s
+        && r_gun_u > d->gun_ultra_thresh * s
+        && (p_gun + p_gun_u) > 5e-5f
+        && (now - d->last_gun_s) > d->gun_cooldown) {
         SoundEvent *e = &events[emitted++];
         e->kind = SE_GUNSHOT;
         e->pan = pan;
-        float mag = (r_fluxH / (6.0f * s)) * 0.5f + (r_high / (4.0f * s)) * 0.5f;
-        if (mag < 1.0f) mag = 1.0f;
-        if (mag > 3.0f) mag = 3.0f;
-        e->strength = mag;
+        e->strength = clamp_strength(
+            (r_fluxG / (d->gun_flux_thresh * s)) * 0.5f +
+            (r_gun   / (d->gun_power_thresh * s)) * 0.5f);
         e->timestamp = now;
-        d->last_gunshot_s = now;
+        d->last_gun_s = now;
     }
 
-    /* Footstep criteria:
-     *   1. Low-band power well above floor
-     *   2. Low-band flux positive (onset), not just sustained rumble
-     *   3. Low band dominates over high band (not a gunshot / music hit)
-     *   4. Mid band moderate (not a synth bass pad that's already loud)
-     */
-    if (emitted < max_events
-        && r_low > 3.5f * s
-        && flux_low > 0.0f
-        && p_low > 4e-5f
-        && p_low > 1.4f * p_high
-        && r_mid < 6.0f * s
-        && (now - d->last_footstep_s) > 0.10) {
+    /* Explosion */
+    if (d->enable_expl && emitted < max_events
+        && r_expl > d->expl_thresh * s
+        && flux_expl > 0.0f
+        && p_expl > 5e-4f
+        && (now - d->last_expl_s) > d->expl_cooldown) {
+        SoundEvent *e = &events[emitted++];
+        e->kind = SE_EXPLOSION;
+        e->pan = pan;
+        e->strength = clamp_strength(r_expl / (d->expl_thresh * s));
+        e->timestamp = now;
+        d->last_expl_s = now;
+    }
+
+    /* Footstep */
+    if (d->enable_foot && emitted < max_events
+        && r_foot > d->foot_thresh * s
+        && flux_foot > 0.0f
+        && p_foot > 4e-5f
+        && p_foot > 1.4f * p_gun
+        && (now - d->last_foot_s) > d->foot_cooldown) {
         SoundEvent *e = &events[emitted++];
         e->kind = SE_FOOTSTEP;
         e->pan = pan;
-        float mag = r_low / (3.5f * s);
-        if (mag < 1.0f) mag = 1.0f;
-        if (mag > 3.0f) mag = 3.0f;
-        e->strength = mag;
+        e->strength = clamp_strength(r_foot / (d->foot_thresh * s));
         e->timestamp = now;
-        d->last_footstep_s = now;
+        d->last_foot_s = now;
     }
 
-    /* Swap buffers. */
-    float *tmp = d->mag_prev;
-    d->mag_prev = d->mag_curr;
-    d->mag_curr = tmp;
+    /* Vehicle */
+    if (d->enable_veh && emitted < max_events
+        && r_veh > d->veh_thresh * s
+        && p_veh > 1e-3f
+        && (now - d->last_veh_s) > d->veh_cooldown) {
+        SoundEvent *e = &events[emitted++];
+        e->kind = SE_VEHICLE;
+        e->pan = pan;
+        e->strength = clamp_strength(r_veh / (d->veh_thresh * s));
+        e->timestamp = now;
+        d->last_veh_s = now;
+    }
 
+    float *tw = d->mag_prev; d->mag_prev = d->mag_curr; d->mag_curr = tw;
     return emitted;
 }

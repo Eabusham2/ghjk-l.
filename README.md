@@ -1,165 +1,145 @@
 # SoundOverlay
 
-A native C / Win32 application that captures the audio your PC is already
-playing (WASAPI loopback), runs FFT-based analysis on it, and displays a
-transparent, click-through, always-on-top HUD that shows the direction of
-**footsteps** and **gunshots** in games such as Fortnite, Apex, Warzone,
-CS2, etc.
+A native C / Win32 game audio visualizer that captures your PC's audio
+output via WASAPI loopback and shows a transparent, click-through HUD
+with directional markers for **footsteps**, **gunshots**, **vehicles**,
+and **explosions**.
 
-It is an accessibility / awareness tool. It does **not** read game memory,
-inject into the game, or interact with the game — it only analyzes the
-audio that the game has already sent to your speakers.
+No external dependencies. Pure C, pure Win32. Single `.exe`.
+
+## Supported Games (built-in profiles)
+
+| Profile | Tuned for | Key features |
+|---------|-----------|-------------|
+| **Universal** | Any game | Balanced defaults |
+| **Fortnite** | Fortnite | Wide footstep band, build/edit awareness |
+| **Call of Duty: Warzone** | Warzone / MW | Heavy bass compensation, vehicle detection |
+| **Valorant** | Valorant | Crisp footsteps, no vehicle noise |
+| **Counter-Strike 2** | CS2 | Tight thresholds, fast cooldowns |
+| **Apex Legends** | Apex | Legend-varied footsteps, vehicle rumble |
+| **PUBG: Battlegrounds** | PUBG | Long-range shots, vehicle emphasis |
+| **Rainbow Six Siege** | R6 Siege | Breach sounds, precise footsteps |
+| **Overwatch 2** | OW2 | Ability-aware, varied heroes |
+| **Escape from Tarkov** | Tarkov | Ultra-sensitive, realistic audio |
+
+Each profile tunes frequency bands, detection thresholds, cooldowns,
+noise-floor adaptation speed, and default overlay settings.
 
 ## Features
 
-- **WASAPI loopback** capture of any active render endpoint (default
-  speakers, a specific headset, etc.) without a virtual cable.
-- **Accurate detection** pipeline:
-  - 2048-sample Hann-windowed FFT at 48 kHz (1024-sample hop, 50% overlap).
-  - Four-band power analysis (low 40-220 Hz, mid 300-1200 Hz,
-    high 1.5-6 kHz, ultra 6-12 kHz).
-  - **Spectral flux onset detection** in the high band to catch the
-    broadband transient of a gunshot's crack + snap.
-  - **Adaptive per-band noise floor** (exponential moving average) so
-    the detector self-calibrates to each game's mix within a few
-    seconds.
-  - **Refractory periods** to avoid repeated triggers from the same
-    event.
-  - Stereo-pan direction from energy-weighted L/R ratio on the windowed
-    signal.
-- **GUI settings window** (standard Win32 controls) with:
-  - Audio device combobox
-  - Sensitivity slider (0.5x .. 2.0x threshold multiplier)
-  - Overlay size slider (200 .. 600 px)
-  - Overlay position (top-right / top-left / bottom-right / bottom-left /
-    center)
-  - Show-overlay checkbox
-  - Start / Stop buttons
-- **Transparent overlay** using `WS_EX_LAYERED | WS_EX_TRANSPARENT |
-  WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` with chroma-key
-  transparency, drawn via double-buffered GDI at ~30 fps.
-- **Global hotkey**: `Ctrl + F10` to quit.
-
-No external dependencies beyond the Windows SDK — pure C, pure Win32.
+- **WASAPI loopback** capture of any render endpoint — no virtual cable
+  needed
+- **4 event types**: footsteps (green), gunshots (red), vehicles (blue),
+  explosions (orange) with distinct HUD markers
+- **FFT-based detection** with spectral flux onset detection, adaptive
+  per-band noise floors, and refractory periods
+- **10 game profiles** with per-game tuned frequency bands and thresholds
+- **Launcher / settings GUI**:
+  - Game selection buttons (click to switch profile, even while running)
+  - Audio device picker
+  - Sensitivity slider (0.5x - 2.0x)
+  - Overlay size slider (200 - 600 px)
+  - Position selector (5 positions)
+  - Per-event-type enable/disable checkboxes
+  - Show/hide overlay toggle
+  - Minimize-to-tray option
+  - Live event log with timestamps and direction
+  - Running detection stats and session timer
+- **Transparent overlay**: `WS_EX_LAYERED | WS_EX_TRANSPARENT |
+  WS_EX_TOPMOST` with chroma-key, double-buffered GDI at ~30 fps
+- **System tray**: right-click for Show/Hide, Start/Stop, Exit
+- **Global hotkey**: `Ctrl + F10` to quit from anywhere
 
 ## Source layout
 
 ```
-fft.c/h        Radix-2 in-place FFT.
-audio.c/h      WASAPI loopback capture + ring buffer + downmix + resample.
-detector.c/h   FFT-based footstep / gunshot classifier.
-overlay.c/h    Layered click-through HUD window (GDI).
-main.c         Settings window, hotkey, thread orchestration (WinMain).
-build.bat      MSVC build.
-build-mingw.bat Alternative mingw-w64 build.
+fft.c/h         Radix-2 in-place FFT
+audio.c/h       WASAPI loopback capture, downmix, resample, ring buffer
+detector.c/h    FFT analysis + 4-type classifier with profile params
+overlay.c/h     Layered click-through HUD with 4 marker shapes
+profiles.c/h    10 game profiles with tuned detection parameters
+main.c          Launcher GUI, tray, event log, pipeline orchestration
+build.bat       MSVC build
+build-mingw.bat mingw-w64 build
 ```
 
 ## Building
 
-### With MSVC (recommended)
+### MSVC (recommended)
 
-Open *x64 Native Tools Command Prompt for VS 2019/2022* (or run
-`vcvars64.bat` inside any cmd), then:
+Open an **x64 Native Tools Command Prompt** for VS 2019/2022:
 
 ```
 build.bat
 ```
 
-The binary is produced at `build\SoundOverlay.exe`. It is statically
-linked to the CRT (`/MT`), subsystem `WINDOWS` (no console), and needs
-no runtime dependencies on the target machine.
+Output: `build\SoundOverlay.exe` (static CRT, no console, no dependencies).
 
-### With mingw-w64
+### mingw-w64
 
-From an MSYS2 `mingw64` shell or any shell with `x86_64-w64-mingw32-gcc`
-aliased to `gcc`:
+From MSYS2 mingw64 or any shell with `gcc` = `x86_64-w64-mingw32-gcc`:
 
 ```
 build-mingw.bat
 ```
 
-## Running
+## Usage
 
-Double-click `SoundOverlay.exe`. The settings window appears:
+1. Launch `SoundOverlay.exe`
+2. Click a **game profile** button (or leave on Universal)
+3. Pick your **audio device** (the one your game plays through)
+4. Adjust **sensitivity** if needed (lower = more triggers)
+5. Toggle which event types to detect
+6. Click **Start**
 
-1. Pick the audio device that your game plays through (the first entry
-   tagged `[default]` is what Windows is using right now).
-2. Leave **Sensitivity** at `1.0x` for a first try. Lower = more
-   triggers, higher = fewer.
-3. Pick a size / position for the HUD.
-4. Click **Start**. The compass-shaped overlay appears and begins
-   lighting up green (`STEP`) and red (`SHOT`) markers as events are
-   detected.
+The compass-shaped overlay appears with:
+- **STEP** (green circle) — footsteps
+- **SHOT** (red starburst) — gunshots
+- **VEH** (blue diamond) — vehicles
+- **BOOM** (orange multi-ray) — explosions
 
-Quit with **Ctrl + F10** or by closing the settings window.
+All markers are positioned on the compass ring based on stereo pan
+(left/right) and fade out over 1.4 seconds.
 
-## How it works
+The **event log** in the launcher shows every detection with timestamp,
+type, and direction. Stats at the bottom track total counts and session
+duration.
 
-### Capture (`audio.c`)
+### Controls
 
-WASAPI is initialised in **shared, loopback** mode against the selected
-render endpoint. The audio thread pulls packets with
-`IAudioCaptureClient::GetBuffer`, detects the mix format from the
-endpoint's `WAVEFORMATEXTENSIBLE`, downmixes 1 / 2 / 5.1 / 7.1 layouts
-to stereo using ITU-775-style weights, linearly resamples to 48 kHz if
-the endpoint runs at a different rate, and pushes the stereo float
-frames into a 1-second ring buffer protected by a critical section.
+| Action | How |
+|--------|-----|
+| Quit | Ctrl + F10 (global) or close the window |
+| Minimize to tray | Check "Minimize to tray", then minimize |
+| Tray menu | Right-click the tray icon |
+| Switch game mid-session | Click a different game button |
+| Adjust sensitivity live | Drag the slider while running |
 
-### Detection (`detector.c`)
+## How detection works
 
-For each 2048-sample window (1024-sample hop):
-
-1. Sum to mono, apply Hann window, run the radix-2 FFT in `fft.c`.
-2. Compute magnitude spectrum; integrate power across four bands and
-   compute positive spectral flux (current - previous magnitude,
-   clipped at zero) in the high band.
-3. Update per-band exponential noise floors (alpha = 0.02, ~0.7 s time
-   constant).
-4. Compute per-band ratios vs. their floors. Classify:
-   - **Gunshot** = big high-band flux + elevated high band + elevated
-     ultra band + minimum absolute loudness gate, with 130 ms
-     refractory.
-   - **Footstep** = elevated low band + positive low-band flux + low
-     dominance over high band + moderate mid band, with 100 ms
-     refractory.
-5. Stereo pan estimated via `(rms_r - rms_l) / (rms_r + rms_l)` on the
-   windowed signals.
-
-### Overlay (`overlay.c`)
-
-A `WS_POPUP` layered window sized `size_px * size_px`, positioned by
-choice of five anchors, with:
-
-- `WS_EX_LAYERED` + `SetLayeredWindowAttributes(..., LWA_COLORKEY)` for
-  chroma-keyed transparency (cheap, no per-pixel alpha needed).
-- `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE` so the window is click-through
-  and never steals focus.
-- `WS_EX_TOPMOST | WS_EX_TOOLWINDOW` so it floats above full-screen
-  windowed / borderless games without a taskbar icon.
-- A 33 ms timer forces redraws; GDI draws to an offscreen DC that is
-  `BitBlt`-ed to the window for flicker-free double buffering.
-- Events fade linearly over 1.4 s. Pan maps to an angle on the forward
-  hemisphere of the compass.
+1. **Capture**: WASAPI loopback at 48 kHz stereo, 1-second ring buffer
+2. **Window**: 2048-sample Hann window, 1024-sample hop (50% overlap)
+3. **FFT**: Radix-2 in-place, magnitude spectrum
+4. **Bands**: Profile-defined frequency ranges for each event type
+5. **Noise floor**: Per-band exponential moving average (profile-tuned alpha)
+6. **Classification**:
+   - Gunshot = high spectral flux + elevated gun band + ultra band + loudness gate
+   - Explosion = elevated explosion band + positive onset flux + high absolute energy
+   - Footstep = elevated foot band + onset + low-dominance over gun band
+   - Vehicle = sustained sub-bass rumble above threshold
+7. **Direction**: Energy-weighted L/R RMS ratio → pan angle on compass
 
 ## Tuning tips
 
-- **Too many false triggers** on music / explosions: raise sensitivity
-  toward `1.5x`.
-- **Missed footsteps**: lower sensitivity toward `0.7x`.
-- Disable game and Windows "surround virtualization" effects on stereo
-  output so L/R direction stays crisp.
-- If you play with a 5.1 / 7.1 output device selected in Windows, the
-  downmix is done internally; direction is still meaningful but
-  front/back cues collapse into the left/right axis (stereo can't
-  resolve them).
+- **Too many false positives**: raise sensitivity toward 1.5x
+- **Missing events**: lower toward 0.7x
+- **Specific event noise**: uncheck that event type
+- **Best direction**: use stereo output, disable surround virtualization
+- Switch profiles when switching games — each profile's frequency bands
+  match that game's audio mix
 
 ## Known limitations
 
-- Stereo pan cannot distinguish front from back. A true surround
-  capture path (7.1 WASAPI shared mode without downmix) is a natural
-  extension.
-- Heuristic detectors always have false positives on unusual audio
-  (nearby explosions, music stingers with strong kicks). A small
-  ML classifier trained on labeled game audio would improve precision.
-- Windows only. The overlay relies on Win32 layered windows and WASAPI
-  loopback.
+- Stereo cannot resolve front vs. back (only left/right/center)
+- Heuristic classification has inherent false positives on unusual audio
+- Windows only (WASAPI + Win32 layered windows)
