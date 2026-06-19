@@ -13,7 +13,7 @@ if not exist build mkdir build
 
 gcc -O2 -Wall -Wextra -municode -mwindows ^
     -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN ^
-    main.c overlay.c audio.c detector.c fft.c profiles.c ^
+    main.c overlay.c audio.c detector.c fft.c profiles.c settings.c ^
     -o build\SoundOverlay.exe ^
     -luser32 -lgdi32 -lole32 -loleaut32 -lavrt -lcomctl32 -luuid -lshell32
 

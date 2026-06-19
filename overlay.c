@@ -247,8 +247,14 @@ static void paint(Overlay *o, HDC win_dc, RECT *client) {
 
         double ang_deg = -90.0 + te->ev.pan * 90.0;
         double a = ang_deg * M_PI / 180.0;
-        int px = cx + (int)((radius - 6) * cos(a));
-        int py = cy + (int)((radius - 6) * sin(a));
+        /* Proximity: louder (closer) events sit nearer the center, quieter
+         * ones near the rim. distance 0..1 -> 40%..92% of the ring radius. */
+        float dist = te->ev.distance;
+        if (dist < 0.0f) dist = 0.0f;
+        if (dist > 1.0f) dist = 1.0f;
+        float rr = (radius - 6) * (0.40f + 0.52f * dist);
+        int px = cx + (int)(rr * cos(a));
+        int py = cy + (int)(rr * sin(a));
 
         switch (te->ev.kind) {
             case SE_FOOTSTEP:  draw_footstep(mem,  px, py, te->ev.strength, alpha, cols.foot); break;

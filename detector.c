@@ -51,11 +51,14 @@ int detector_init(SoundDetector *d, const GameProfile *profile, float sensitivit
     size_t n = AUDIO_FFT_FRAMES;
     d->bins     = n / 2 + 1;
     d->window   = (float *)malloc(sizeof(float) * n);
-    d->scr_re   = (float *)malloc(sizeof(float) * n);
-    d->scr_im   = (float *)malloc(sizeof(float) * n);
+    d->l_re     = (float *)malloc(sizeof(float) * n);
+    d->l_im     = (float *)malloc(sizeof(float) * n);
+    d->r_re     = (float *)malloc(sizeof(float) * n);
+    d->r_im     = (float *)malloc(sizeof(float) * n);
     d->mag_prev = (float *)calloc(d->bins, sizeof(float));
     d->mag_curr = (float *)calloc(d->bins, sizeof(float));
-    if (!d->window || !d->scr_re || !d->scr_im || !d->mag_prev || !d->mag_curr) {
+    if (!d->window || !d->l_re || !d->l_im || !d->r_re || !d->r_im
+        || !d->mag_prev || !d->mag_curr) {
         detector_free(d);
         return -1;
     }
@@ -80,8 +83,10 @@ void detector_free(SoundDetector *d) {
     if (!d) return;
     fft_free(&d->fft);
     free(d->window);   d->window   = NULL;
-    free(d->scr_re);   d->scr_re   = NULL;
-    free(d->scr_im);   d->scr_im   = NULL;
+    free(d->l_re);     d->l_re     = NULL;
+    free(d->l_im);     d->l_im     = NULL;
+    free(d->r_re);     d->r_re     = NULL;
+    free(d->r_im);     d->r_im     = NULL;
     free(d->mag_prev); d->mag_prev = NULL;
     free(d->mag_curr); d->mag_curr = NULL;
 }
@@ -145,6 +150,40 @@ static float clamp_strength(float v) {
     return v;
 }
 
+/* Stereo pan computed from L/R energy *within a single frequency band*.
+ * This localizes each event using only the energy in its own band, so a
+ * footstep on the left is not pulled toward center by music or gunfire
+ * that happens to be centered. Returns -1 (left) .. +1 (right). */
+static float band_pan(const float *Lre, const float *Lim,
+                      const float *Rre, const float *Rim,
+                      size_t bins, float bin_hz, float f0, float f1) {
+    if (f0 >= f1 || f1 <= 0) return 0.0f;
+    size_t k0 = (size_t)(f0 / bin_hz);
+    size_t k1 = (size_t)(f1 / bin_hz);
+    if (k1 > bins) k1 = bins;
+    if (k0 >= k1) return 0.0f;
+    double el = 0.0, er = 0.0;
+    for (size_t k = k0; k < k1; ++k) {
+        el += (double)Lre[k] * Lre[k] + (double)Lim[k] * Lim[k];
+        er += (double)Rre[k] * Rre[k] + (double)Rim[k] * Rim[k];
+    }
+    double rl = sqrt(el) + 1e-9;
+    double rr = sqrt(er) + 1e-9;
+    float pan = (float)((rr - rl) / (rr + rl));
+    if (pan < -1.0f) pan = -1.0f;
+    if (pan >  1.0f) pan =  1.0f;
+    return pan;
+}
+
+/* Map clamped strength (1..3) to a proximity radius hint: louder events
+ * are treated as closer and drawn nearer the HUD center. */
+static float strength_to_distance(float strength) {
+    float d = 1.0f - (strength - 1.0f) / 2.0f;  /* 1..3 -> 1..0 */
+    if (d < 0.12f) d = 0.12f;                     /* never dead-center */
+    if (d > 1.0f)  d = 1.0f;
+    return d;
+}
+
 int detector_analyze(SoundDetector *d,
                      const float *left,
                      const float *right,
@@ -154,17 +193,25 @@ int detector_analyze(SoundDetector *d,
 
     size_t n = AUDIO_FFT_FRAMES;
 
+    /* Transform the left and right channels separately. By linearity the
+     * mono spectrum equals 0.5*(L + R) per bin, so we recover the exact
+     * mono magnitude used for detection AND retain per-channel spectra for
+     * accurate per-band stereo localization. */
     for (size_t i = 0; i < n; ++i) {
-        d->scr_re[i] = 0.5f * (left[i] + right[i]) * d->window[i];
-        d->scr_im[i] = 0.0f;
+        d->l_re[i] = left[i]  * d->window[i];
+        d->l_im[i] = 0.0f;
+        d->r_re[i] = right[i] * d->window[i];
+        d->r_im[i] = 0.0f;
     }
-    fft_forward(&d->fft, d->scr_re, d->scr_im);
+    fft_forward(&d->fft, d->l_re, d->l_im);
+    fft_forward(&d->fft, d->r_re, d->r_im);
 
     float *prev = d->mag_prev;
     float *curr = d->mag_curr;
     for (size_t k = 0; k < d->bins; ++k) {
-        float r = d->scr_re[k], ii = d->scr_im[k];
-        curr[k] = sqrtf(r * r + ii * ii);
+        float mre = 0.5f * (d->l_re[k] + d->r_re[k]);
+        float mim = 0.5f * (d->l_im[k] + d->r_im[k]);
+        curr[k] = sqrtf(mre * mre + mim * mim);
     }
 
     float bin_hz = (float)AUDIO_SAMPLE_RATE / (float)n;
@@ -195,20 +242,6 @@ int detector_analyze(SoundDetector *d,
     float r_expl  = p_expl  / (d->nf_expl      + 1e-12f);
     float r_fluxG = flux_gun / (d->nf_flux_gun + 1e-12f);
 
-    /* Stereo pan. */
-    double sl = 0.0, sr = 0.0;
-    for (size_t i = 0; i < n; ++i) {
-        float wl = left[i]  * d->window[i];
-        float wr = right[i] * d->window[i];
-        sl += (double)wl * (double)wl;
-        sr += (double)wr * (double)wr;
-    }
-    float rms_l = (float)sqrt(sl / (double)n) + 1e-9f;
-    float rms_r = (float)sqrt(sr / (double)n) + 1e-9f;
-    float pan = (rms_r - rms_l) / (rms_r + rms_l);
-    if (pan < -1.0f) pan = -1.0f;
-    if (pan >  1.0f) pan =  1.0f;
-
     /* Warmup guard. */
     d->frame_count++;
     if (d->frame_count < (unsigned)d->warmup) {
@@ -229,10 +262,12 @@ int detector_analyze(SoundDetector *d,
         && (now - d->last_gun_s) > d->gun_cooldown) {
         SoundEvent *e = &events[emitted++];
         e->kind = SE_GUNSHOT;
-        e->pan = pan;
+        e->pan = band_pan(d->l_re, d->l_im, d->r_re, d->r_im,
+                          d->bins, bin_hz, d->gun_lo, d->gun_ultra_hi);
         e->strength = clamp_strength(
             (r_fluxG / (d->gun_flux_thresh * s)) * 0.5f +
             (r_gun   / (d->gun_power_thresh * s)) * 0.5f);
+        e->distance = strength_to_distance(e->strength);
         e->timestamp = now;
         d->last_gun_s = now;
     }
@@ -245,8 +280,10 @@ int detector_analyze(SoundDetector *d,
         && (now - d->last_expl_s) > d->expl_cooldown) {
         SoundEvent *e = &events[emitted++];
         e->kind = SE_EXPLOSION;
-        e->pan = pan;
+        e->pan = band_pan(d->l_re, d->l_im, d->r_re, d->r_im,
+                          d->bins, bin_hz, d->expl_lo, d->expl_hi);
         e->strength = clamp_strength(r_expl / (d->expl_thresh * s));
+        e->distance = strength_to_distance(e->strength);
         e->timestamp = now;
         d->last_expl_s = now;
     }
@@ -260,8 +297,10 @@ int detector_analyze(SoundDetector *d,
         && (now - d->last_foot_s) > d->foot_cooldown) {
         SoundEvent *e = &events[emitted++];
         e->kind = SE_FOOTSTEP;
-        e->pan = pan;
+        e->pan = band_pan(d->l_re, d->l_im, d->r_re, d->r_im,
+                          d->bins, bin_hz, d->foot_lo, d->foot_hi);
         e->strength = clamp_strength(r_foot / (d->foot_thresh * s));
+        e->distance = strength_to_distance(e->strength);
         e->timestamp = now;
         d->last_foot_s = now;
     }
@@ -273,8 +312,10 @@ int detector_analyze(SoundDetector *d,
         && (now - d->last_veh_s) > d->veh_cooldown) {
         SoundEvent *e = &events[emitted++];
         e->kind = SE_VEHICLE;
-        e->pan = pan;
+        e->pan = band_pan(d->l_re, d->l_im, d->r_re, d->r_im,
+                          d->bins, bin_hz, d->veh_lo, d->veh_hi);
         e->strength = clamp_strength(r_veh / (d->veh_thresh * s));
+        e->distance = strength_to_distance(e->strength);
         e->timestamp = now;
         d->last_veh_s = now;
     }

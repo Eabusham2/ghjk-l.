@@ -22,18 +22,19 @@ typedef enum {
 
 typedef struct {
     SoundEventKind kind;
-    float  pan;        /* -1 full left .. +1 full right */
+    float  pan;        /* -1 full left .. +1 full right (per-band) */
     float  strength;   /* arbitrary >=1 scale for rendering size */
+    float  distance;   /* 0 = close (toward center) .. 1 = far (toward edge) */
     double timestamp;  /* QueryPerformanceCounter seconds */
 } SoundEvent;
 
 typedef struct {
     FFT    fft;
     float *window;        /* Hann, length AUDIO_FFT_FRAMES */
-    float *scr_re;
-    float *scr_im;
+    float *l_re, *l_im;   /* left-channel spectrum scratch, length N */
+    float *r_re, *r_im;   /* right-channel spectrum scratch, length N */
     float *mag_prev;
-    float *mag_curr;      /* length AUDIO_FFT_FRAMES/2 + 1 */
+    float *mag_curr;      /* mono magnitude, length AUDIO_FFT_FRAMES/2 + 1 */
     size_t bins;
 
     /* Adaptive per-band noise floors. */

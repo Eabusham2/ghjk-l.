@@ -18,7 +18,7 @@ pushd build
 
 cl /nologo /O2 /W3 /MT /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN ^
    /I.. ^
-   ../main.c ../overlay.c ../audio.c ../detector.c ../fft.c ../profiles.c ^
+   ../main.c ../overlay.c ../audio.c ../detector.c ../fft.c ../profiles.c ../settings.c ^
    /Fe%OUT% /link /SUBSYSTEM:WINDOWS ^
    user32.lib gdi32.lib ole32.lib oleaut32.lib ^
    avrt.lib comctl32.lib uuid.lib shell32.lib

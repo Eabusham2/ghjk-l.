@@ -16,6 +16,7 @@
 #include "detector.h"
 #include "overlay.h"
 #include "profiles.h"
+#include "settings.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "user32.lib")
@@ -56,6 +57,15 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define IDM_TRAY_SHOW     3001
 #define IDM_TRAY_STARTSTOP 3002
 #define IDM_TRAY_EXIT     3003
+
+/* Cross-thread messages */
+#define WM_APP_EVENT      (WM_APP + 2)   /* detector posted an event       */
+#define WM_APP_DEVLOST    (WM_APP + 3)   /* capture thread died unexpectedly */
+
+/* Global hotkey ids */
+#define HK_QUIT           1   /* Ctrl+F10 */
+#define HK_OVERLAY        2   /* Ctrl+F9  */
+#define HK_STARTSTOP      3   /* Ctrl+F8  */
 
 /* Event log capacity */
 #define LOG_MAX_LINES     200
@@ -98,7 +108,7 @@ typedef struct {
     NOTIFYICONDATAW  nid;
     int              tray_added;
 
-    int              hotkey_id;
+    int              hotkeys_registered;
 } App;
 
 static App g_app;
@@ -153,7 +163,13 @@ static DWORD WINAPI detector_thread(LPVOID arg) {
 
     while (!InterlockedCompareExchange(&a->det_stop, 0, 0)) {
         int rc = audio_capture_next_window(a->capture, 200, left, right);
-        if (rc < 0) break;
+        if (rc < 0) {
+            /* Capture died unexpectedly (e.g. device unplugged). Notify the
+             * UI thread so it can reset, unless we are stopping on purpose. */
+            if (!InterlockedCompareExchange(&a->det_stop, 0, 0))
+                PostMessageW(a->main_wnd, WM_APP_DEVLOST, 0, 0);
+            break;
+        }
         if (rc == 0) continue;
 
         SoundEvent ev[SE_KIND_COUNT];
@@ -166,7 +182,7 @@ static DWORD WINAPI detector_thread(LPVOID arg) {
                 case SE_VEHICLE:   InterlockedIncrement(&a->stat_veh);  break;
                 case SE_EXPLOSION: InterlockedIncrement(&a->stat_expl); break;
             }
-            PostMessageW(a->main_wnd, WM_APP + 2, (WPARAM)ev[i].kind,
+            PostMessageW(a->main_wnd, WM_APP_EVENT, (WPARAM)ev[i].kind,
                          (LPARAM)(int)(ev[i].pan * 1000));
         }
     }
@@ -285,6 +301,79 @@ static void select_profile(App *a, int idx) {
     wchar_t status[256];
     swprintf(status, 256, L"Profile: %s", p->display_name);
     set_status(a, status);
+}
+
+/* ---- settings persistence ------------------------------------------- */
+
+static void position_to_combo_index(App *a, int pos_index) {
+    if (pos_index < 0 || pos_index > 4) pos_index = 0;
+    SendMessageW(a->cb_pos, CB_SETCURSEL, pos_index, 0);
+}
+
+static void select_device_by_id(App *a, const wchar_t *id) {
+    if (!id || !id[0]) return;
+    for (int i = 0; i < a->device_count; ++i) {
+        if (lstrcmpW(a->devices[i].id, id) == 0) {
+            SendMessageW(a->cb_device, CB_SETCURSEL, i, 0);
+            return;
+        }
+    }
+}
+
+/* Apply loaded settings to the controls. Profile defaults are applied
+ * first (via select_profile), then the user's saved tweaks override. */
+static void apply_settings(App *a, const Settings *s) {
+    select_profile(a, s->profile_index);
+
+    int st = s->sensitivity_tick;
+    if (st < 5) st = 5;
+    if (st > 20) st = 20;
+    SendMessageW(a->sl_sens, TBM_SETPOS, TRUE, st);
+
+    int sz = s->size;
+    if (sz < 200) sz = 200;
+    if (sz > 600) sz = 600;
+    SendMessageW(a->sl_size, TBM_SETPOS, TRUE, sz);
+
+    position_to_combo_index(a, s->position_index);
+    select_device_by_id(a, s->device_id);
+
+    SendMessageW(a->ck_foot, BM_SETCHECK, s->enable_foot ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(a->ck_gun,  BM_SETCHECK, s->enable_gun  ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(a->ck_veh,  BM_SETCHECK, s->enable_veh  ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(a->ck_expl, BM_SETCHECK, s->enable_expl ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(a->ck_show, BM_SETCHECK, s->show_overlay ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(a->ck_tray, BM_SETCHECK, s->minimize_tray ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    update_slider_labels(a);
+}
+
+/* Read the current control state into a Settings struct for saving. */
+static void gather_settings(App *a, Settings *s) {
+    settings_defaults(s);
+    s->profile_index    = a->active_profile;
+    s->sensitivity_tick = (int)SendMessageW(a->sl_sens, TBM_GETPOS, 0, 0);
+    s->size             = slider_size(a);
+    s->position_index   = (int)SendMessageW(a->cb_pos, CB_GETCURSEL, 0, 0);
+    if (s->position_index < 0) s->position_index = 0;
+    s->enable_foot   = SendMessageW(a->ck_foot, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s->enable_gun    = SendMessageW(a->ck_gun,  BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s->enable_veh    = SendMessageW(a->ck_veh,  BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s->enable_expl   = SendMessageW(a->ck_expl, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s->show_overlay  = SendMessageW(a->ck_show, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s->minimize_tray = SendMessageW(a->ck_tray, BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+    int di = selected_device_index(a);
+    if (di >= 0 && di < a->device_count)
+        lstrcpynW(s->device_id, a->devices[di].id, 256);
+    else
+        s->device_id[0] = L'\0';
+}
+
+static void save_current_settings(App *a) {
+    Settings s;
+    gather_settings(a, &s);
+    settings_save(&s);
 }
 
 /* ---- tray ------------------------------------------------------------ */
@@ -659,8 +748,23 @@ static LRESULT CALLBACK main_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
                 update_stats(a);
             return 0;
         case WM_HOTKEY:
-            if ((int)wp == a->hotkey_id)
+            if ((int)wp == HK_QUIT) {
                 PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            } else if ((int)wp == HK_OVERLAY) {
+                if (a->overlay) {
+                    BOOL checked = SendMessageW(a->ck_show, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                    SendMessageW(a->ck_show, BM_SETCHECK, checked ? BST_UNCHECKED : BST_CHECKED, 0);
+                    if (checked) overlay_hide(a->overlay);
+                    else         overlay_show(a->overlay);
+                }
+            } else if ((int)wp == HK_STARTSTOP) {
+                if (a->det_running) {
+                    stop_pipeline(a);
+                    KillTimer(a->main_wnd, 2);
+                } else {
+                    start_pipeline(a);
+                }
+            }
             return 0;
         case WM_TRAY:
             if (lp == WM_RBUTTONUP)
@@ -677,8 +781,7 @@ static LRESULT CALLBACK main_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
                 ShowWindow(hwnd, SW_HIDE);
             }
             return 0;
-        /* WM_APP+2 = event from detector thread (kind in wp, pan*1000 in lp) */
-        case WM_APP + 2: {
+        case WM_APP_EVENT: {
             SoundEvent ev;
             ev.kind = (SoundEventKind)(int)wp;
             ev.pan = (float)(int)lp / 1000.0f;
@@ -687,7 +790,17 @@ static LRESULT CALLBACK main_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
             log_event(a, &ev);
             return 0;
         }
+        case WM_APP_DEVLOST:
+            stop_pipeline(a);
+            KillTimer(hwnd, 2);
+            set_status(a, L"Audio device lost! Reconnect and click Start.");
+            MessageBoxW(hwnd, L"The audio device was disconnected or became "
+                        L"unavailable.\nPlease reconnect and click Start.",
+                        APP_TITLE, MB_ICONWARNING | MB_OK);
+            populate_devices(a);
+            return 0;
         case WM_CLOSE:
+            save_current_settings(a);
             stop_pipeline(a);
             KillTimer(hwnd, 2);
             tray_remove(a);
@@ -695,7 +808,11 @@ static LRESULT CALLBACK main_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
             DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
-            if (a->hotkey_id) UnregisterHotKey(hwnd, a->hotkey_id);
+            if (a->hotkeys_registered) {
+                UnregisterHotKey(hwnd, HK_QUIT);
+                UnregisterHotKey(hwnd, HK_OVERLAY);
+                UnregisterHotKey(hwnd, HK_STARTSTOP);
+            }
             PostQuitMessage(0);
             return 0;
     }
@@ -739,12 +856,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
 
     create_controls(&g_app);
 
-    /* Default to Universal profile. */
-    select_profile(&g_app, 0);
+    /* Load persisted settings (or fall back to defaults). */
+    {
+        Settings cfg;
+        settings_defaults(&cfg);
+        settings_load(&cfg);
+        apply_settings(&g_app, &cfg);
+    }
 
-    g_app.hotkey_id = 1;
-    RegisterHotKey(g_app.main_wnd, g_app.hotkey_id,
-                   MOD_CONTROL | MOD_NOREPEAT, VK_F10);
+    /* Register global hotkeys: Ctrl+F10=quit, Ctrl+F9=overlay, Ctrl+F8=start/stop */
+    RegisterHotKey(g_app.main_wnd, HK_QUIT,      MOD_CONTROL | MOD_NOREPEAT, VK_F10);
+    RegisterHotKey(g_app.main_wnd, HK_OVERLAY,    MOD_CONTROL | MOD_NOREPEAT, VK_F9);
+    RegisterHotKey(g_app.main_wnd, HK_STARTSTOP,  MOD_CONTROL | MOD_NOREPEAT, VK_F8);
+    g_app.hotkeys_registered = 1;
 
     ShowWindow(g_app.main_wnd, show);
     UpdateWindow(g_app.main_wnd);
