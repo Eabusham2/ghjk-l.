@@ -57,7 +57,7 @@ for that mix:
   explosions (orange) with distinct HUD markers
 - **FFT-based detection** with spectral flux onset detection, adaptive
   per-band noise floors, and refractory periods
-- **10 game profiles** with per-game tuned frequency bands and thresholds
+- **11 game profiles** with per-game tuned frequency bands and thresholds
 - **Launcher / settings GUI**:
   - Game selection buttons (click to switch profile, even while running)
   - Audio device picker
@@ -69,10 +69,24 @@ for that mix:
   - Minimize-to-tray option
   - Live event log with timestamps and direction
   - Running detection stats and session timer
+- **Per-band stereo localization**: each event's direction is computed from
+  the L/R energy *within its own frequency band*, so a footstep on the left
+  is not pulled toward center by centered music or gunfire
+- **Proximity rendering**: louder (closer) events are drawn nearer the HUD
+  center, quieter ones near the rim
+- **Settings persistence**: profile, device, sensitivity, size, position,
+  and toggles are saved to `%APPDATA%\SoundOverlay\settings.ini` on exit and
+  restored on the next launch
+- **Device-loss recovery**: if the audio device is unplugged or becomes
+  unavailable mid-session, the pipeline stops cleanly, the device list is
+  refreshed, and you're prompted to reconnect
 - **Transparent overlay**: `WS_EX_LAYERED | WS_EX_TRANSPARENT |
   WS_EX_TOPMOST` with chroma-key, double-buffered GDI at ~30 fps
 - **System tray**: right-click for Show/Hide, Start/Stop, Exit
-- **Global hotkey**: `Ctrl + F10` to quit from anywhere
+- **Global hotkeys**:
+  - `Ctrl + F10` — quit from anywhere
+  - `Ctrl + F9` — toggle the overlay on/off
+  - `Ctrl + F8` — start/stop detection
 
 ## Source layout
 
@@ -81,7 +95,8 @@ fft.c/h         Radix-2 in-place FFT
 audio.c/h       WASAPI loopback capture, downmix, resample, ring buffer
 detector.c/h    FFT analysis + 4-type classifier with profile params
 overlay.c/h     Layered click-through HUD with 4 marker shapes
-profiles.c/h    10 game profiles with tuned detection parameters
+profiles.c/h    11 game profiles with tuned detection parameters
+settings.c/h    Persistent settings (%APPDATA%\SoundOverlay\settings.ini)
 main.c          Launcher GUI, tray, event log, pipeline orchestration
 build.bat       MSVC build
 build-mingw.bat mingw-w64 build
@@ -134,10 +149,16 @@ duration.
 | Action | How |
 |--------|-----|
 | Quit | Ctrl + F10 (global) or close the window |
+| Toggle overlay | Ctrl + F9 (global) |
+| Start / stop detection | Ctrl + F8 (global) or the Start/Stop buttons |
 | Minimize to tray | Check "Minimize to tray", then minimize |
 | Tray menu | Right-click the tray icon |
 | Switch game mid-session | Click a different game button |
 | Adjust sensitivity live | Drag the slider while running |
+
+Your last-used profile, device, sensitivity, overlay size/position, and
+detection toggles are saved automatically and restored the next time you
+launch.
 
 ## How detection works
 
@@ -151,7 +172,12 @@ duration.
    - Explosion = elevated explosion band + positive onset flux + high absolute energy
    - Footstep = elevated foot band + onset + low-dominance over gun band
    - Vehicle = sustained sub-bass rumble above threshold
-7. **Direction**: Energy-weighted L/R RMS ratio → pan angle on compass
+7. **Direction**: Separate L/R channel FFTs; pan is computed from the L/R
+   energy *within each event's own frequency band* → angle on the compass.
+   This keeps concurrent sounds in different bands from smearing each
+   other's direction.
+8. **Proximity**: Event loudness maps to radial distance — louder events are
+   drawn closer to the HUD center, quieter ones toward the rim.
 
 ## Tuning tips
 

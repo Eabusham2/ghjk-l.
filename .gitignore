@@ -1,6 +1,12 @@
-__pycache__/
-*.pyc
-.venv/
+# Build output
 build/
 dist/
-*.spec
+
+# Compiled objects / binaries
+*.o
+*.obj
+*.exe
+*.ilk
+*.pdb
+*.exp
+*.lib
