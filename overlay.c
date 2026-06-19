@@ -59,7 +59,7 @@ static void place_window(Overlay *o) {
         case OP_CENTER:       x = (sw - o->size) / 2;  y = (sh - o->size) / 2; break;
     }
     SetWindowPos(o->hwnd, HWND_TOPMOST, x, y, o->size, o->size,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                 SWP_NOACTIVATE);
 }
 
 /* ---- drawing helpers ------------------------------------------------- */

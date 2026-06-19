@@ -102,6 +102,7 @@ struct AudioCapture {
     volatile LONG    running;
     volatile LONG    stop_request;
     HRESULT          last_error;
+    HANDLE           init_done;   /* signalled once audio thread finishes init */
     FrameRing        ring;
 };
 
@@ -345,6 +346,7 @@ static DWORD WINAPI audio_thread(LPVOID arg) {
     if (FAILED(hr)) goto fail;
 
     InterlockedExchange(&c->running, 1);
+    SetEvent(c->init_done);
 
     /* Resample-on-capture is out of scope; if the endpoint rate differs,
      * we still consume frames at the mix rate and store them - the
@@ -438,6 +440,7 @@ fail:
 
     c->last_error = hr;
     InterlockedExchange(&c->running, 0);
+    SetEvent(c->init_done);
     if (co_init) CoUninitialize();
     return 0;
 }
@@ -448,6 +451,7 @@ AudioCapture *audio_capture_create(const wchar_t *device_id) {
     AudioCapture *c = (AudioCapture *)calloc(1, sizeof(*c));
     if (!c) return NULL;
     if (device_id) lstrcpynW(c->device_id, device_id, 256);
+    c->init_done = CreateEventW(NULL, TRUE, FALSE, NULL);
     /* Ring big enough for ~1 second at 48 kHz. */
     ring_init(&c->ring, AUDIO_SAMPLE_RATE);
     return c;
@@ -457,6 +461,7 @@ void audio_capture_destroy(AudioCapture *c) {
     if (!c) return;
     audio_capture_stop(c);
     ring_free(&c->ring);
+    if (c->init_done) CloseHandle(c->init_done);
     free(c);
 }
 
@@ -465,6 +470,7 @@ int audio_capture_start(AudioCapture *c) {
     if (InterlockedCompareExchange(&c->running, 0, 0)) return 0;
     c->stop_request = 0;
     c->last_error = S_OK;
+    ResetEvent(c->init_done);
     c->thread = CreateThread(NULL, 0, audio_thread, c, 0, NULL);
     return c->thread ? 0 : -1;
 }
@@ -492,6 +498,8 @@ int audio_capture_next_window(AudioCapture *c,
                               float *out_fft_left,
                               float *out_fft_right) {
     if (!c || !out_fft_left || !out_fft_right) return -1;
+
+    WaitForSingleObject(c->init_done, timeout_ms);
 
     DWORD start = GetTickCount();
     for (;;) {
