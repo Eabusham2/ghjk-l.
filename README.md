@@ -14,6 +14,7 @@ No external dependencies. Pure C, pure Win32. Single `.exe`.
 | **Universal** | Any game | Balanced defaults |
 | **Fortnite** | Fortnite | Wide footstep band, build/edit awareness |
 | **Call of Duty: Warzone** | Warzone / MW | Heavy bass compensation, vehicle detection |
+| **COD MW2 (Home Theater)** | MW2 with Home Theater audio | Slow noise floor for quiet steps in cinematic mix, tight 60-180 Hz foot band, high explosion gate to reject LFE bass, very-low vehicle band (15-55 Hz), bigger default overlay for living-room distance |
 | **Valorant** | Valorant | Crisp footsteps, no vehicle noise |
 | **Counter-Strike 2** | CS2 | Tight thresholds, fast cooldowns |
 | **Apex Legends** | Apex | Legend-varied footsteps, vehicle rumble |
@@ -24,6 +25,29 @@ No external dependencies. Pure C, pure Win32. Single `.exe`.
 
 Each profile tunes frequency bands, detection thresholds, cooldowns,
 noise-floor adaptation speed, and default overlay settings.
+
+### MW2 Home Theater profile details
+
+The "Home Theater" audio preset in COD MW2 is a wide, cinematic 5.1/7.1
+mix with heavy sub-bass and large dynamic range. Footsteps are quiet
+relative to gunfire and ambient sound. This profile is specifically tuned
+for that mix:
+
+- **Footstep band narrowed to 60-180 Hz** — avoids sub-50 Hz LFE bleed
+  that would cause false triggers from the cinema bass
+- **Low footstep threshold (2.8x)** — compensates for quiet steps
+- **Slow noise-floor adaptation (alpha 0.012)** — prevents the floor
+  from rising to swallow footsteps during loud firefights
+- **Longer warmup (60 frames)** — the mix is loud and varied at match
+  start; more time to stabilize
+- **High explosion threshold (5.0x)** — the heavy LFE content in Home
+  Theater mode would otherwise constantly trigger explosion markers
+- **Vehicle band at 15-55 Hz** — MW2 vehicle rumble is very low and
+  distinct from the 60-180 Hz footstep band
+- **Bigger default overlay (380 px)** — Home Theater implies a living-room
+  setup with more viewing distance
+- **Slightly more sensitive default (0.85x)** — because footsteps are
+  genuinely quieter in this mix mode
 
 ## Features
 

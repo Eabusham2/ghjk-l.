@@ -7,7 +7,8 @@
 
 typedef struct {
     const wchar_t *id;            /* internal key ("universal", "fortnite", ...) */
-    const wchar_t *display_name;  /* shown in the UI */
+    const wchar_t *display_name;  /* full name shown in status / log */
+    const wchar_t *short_name;    /* compact label for the game button */
 
     /* Footstep band (Hz). */
     float foot_lo, foot_hi;
@@ -57,7 +58,7 @@ typedef struct {
     float default_sensitivity;
 } GameProfile;
 
-#define PROFILE_COUNT 10
+#define PROFILE_COUNT 11
 
 extern const GameProfile g_profiles[PROFILE_COUNT];
 

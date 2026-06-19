@@ -64,8 +64,8 @@ typedef struct {
     HINSTANCE        inst;
     HWND             main_wnd;
 
-    /* Game selection */
-    HWND             game_btns[PROFILE_COUNT];
+    /* Game selection (max 16 to allow headroom beyond PROFILE_COUNT) */
+    HWND             game_btns[16];
     int              active_profile;
 
     /* Controls */
@@ -251,7 +251,7 @@ static void select_profile(App *a, int idx) {
     const GameProfile *p = profile_by_index(idx);
 
     /* Highlight selected game button. */
-    for (int i = 0; i < PROFILE_COUNT; ++i) {
+    for (int i = 0; i < PROFILE_COUNT && i < 16; ++i) {
         if (a->game_btns[i]) {
             EnableWindow(a->game_btns[i], i != idx ? TRUE : FALSE);
         }
@@ -444,17 +444,17 @@ static void create_controls(App *a) {
     HINSTANCE inst = a->inst;
     HWND p = a->main_wnd;
 
-    /* ---- Game Selection (row of buttons) ---- */
-    mk_groupbox(p, L" Select Game ", 10, 6, 690, 90, inst);
+    /* ---- Game Selection (grid of buttons, 6 per row) ---- */
+    mk_groupbox(p, L" Select Game ", 10, 6, 700, 94, inst);
     {
-        int bw = 126, bh = 28, gap = 6;
+        int bw = 108, bh = 26, gap = 5;
         int x0 = 20, y0 = 24;
-        for (int i = 0; i < PROFILE_COUNT; ++i) {
-            int col = i % 5, row = i / 5;
+        for (int i = 0; i < PROFILE_COUNT && i < 16; ++i) {
+            int col = i % 6, row = i / 6;
             int bx = x0 + col * (bw + gap);
             int by = y0 + row * (bh + gap);
             a->game_btns[i] = CreateWindowExW(0, L"BUTTON",
-                profile_by_index(i)->display_name,
+                profile_by_index(i)->short_name,
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 bx, by, bw, bh, p,
                 (HMENU)(INT_PTR)(ID_BTN_GAME_BASE + i), inst, NULL);
@@ -588,7 +588,7 @@ static void on_command(App *a, WPARAM wp) {
 
     /* Game buttons */
     if (id >= ID_BTN_GAME_BASE && id < ID_BTN_GAME_BASE + PROFILE_COUNT
-        && code == BN_CLICKED) {
+        && id < ID_BTN_GAME_BASE + 16 && code == BN_CLICKED) {
         select_profile(a, id - ID_BTN_GAME_BASE);
         return;
     }
