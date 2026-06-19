@@ -8,6 +8,7 @@
 #include <functiondiscoverykeys_devpkey.h>
 #include <ksmedia.h>
 #include <avrt.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -209,11 +210,15 @@ static int parse_mix_format(const WAVEFORMATEX *wfx, MixFormat *mf) {
     }
     if (wfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
         const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)wfx;
-        if (IsEqualGUID(&ext->SubFormat, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) {
+        /* KSDATAFORMAT_SUBTYPE_PCM and _IEEE_FLOAT share the fixed suffix
+         * {0000-0010-8000-00aa00389b71}; the leading Data1 field holds the
+         * WAVE_FORMAT_* tag. Comparing Data1 avoids depending on the GUID
+         * symbols being instantiated by a particular toolchain/import lib. */
+        if (ext->SubFormat.Data1 == WAVE_FORMAT_IEEE_FLOAT) {
             mf->is_float = 1;
             return 1;
         }
-        if (IsEqualGUID(&ext->SubFormat, &KSDATAFORMAT_SUBTYPE_PCM)) {
+        if (ext->SubFormat.Data1 == WAVE_FORMAT_PCM) {
             mf->is_float = 0;
             return 1;
         }
