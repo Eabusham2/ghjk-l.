@@ -1,0 +1,12 @@
+# Build output
+build/
+dist/
+
+# Compiled objects / binaries
+*.o
+*.obj
+*.exe
+*.ilk
+*.pdb
+*.exp
+*.lib
