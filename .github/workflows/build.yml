@@ -1,0 +1,37 @@
+name: Build SoundOverlay
+
+on:
+  push:
+    branches: [main, master, "claude/*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mingw-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Build SoundOverlay.exe
+        run: |
+          x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -municode -mwindows \
+            -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN \
+            main.c overlay.c audio.c detector.c fft.c profiles.c settings.c \
+            -o SoundOverlay.exe \
+            -luser32 -lgdi32 -lole32 -loleaut32 -lavrt -lcomctl32 -luuid -lshell32
+
+      - name: Verify binary
+        run: file SoundOverlay.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoundOverlay
+          path: SoundOverlay.exe
+          retention-days: 90
