@@ -138,7 +138,7 @@ static void log_event(App *a, const SoundEvent *e) {
     SYSTEMTIME st;
     GetLocalTime(&st);
     wchar_t buf[128];
-    swprintf(buf, 128, L"%02d:%02d:%02d  %-4s  %s  (%.0f%%)",
+    swprintf(buf, 128, L"%02d:%02d:%02d  %-4ls  %ls  (%.0f%%)",
              st.wHour, st.wMinute, st.wSecond,
              kind, dir, e->strength * 33.3f);
 
@@ -249,9 +249,9 @@ static void populate_devices(App *a) {
     for (int i = 0; i < a->device_count; ++i) {
         wchar_t label[320];
         if (a->devices[i].is_default)
-            swprintf(label, 320, L"[default] %s", a->devices[i].name);
+            swprintf(label, 320, L"[default] %ls", a->devices[i].name);
         else
-            swprintf(label, 320, L"%s", a->devices[i].name);
+            swprintf(label, 320, L"%ls", a->devices[i].name);
         SendMessageW(a->cb_device, CB_ADDSTRING, 0, (LPARAM)label);
     }
     if (a->device_count > 0)
@@ -305,7 +305,7 @@ static void select_profile(App *a, int idx) {
     }
 
     wchar_t status[256];
-    swprintf(status, 256, L"Profile: %s", p->display_name);
+    swprintf(status, 256, L"Profile: %ls", p->display_name);
     set_status(a, status);
 }
 
@@ -417,6 +417,9 @@ static void tray_show_menu(App *a) {
     GetCursorPos(&pt);
     SetForegroundWindow(a->main_wnd);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, a->main_wnd, NULL);
+    /* Required so clicking away dismisses the menu when the owner window is
+     * not foreground (the usual case while minimized to the tray). */
+    PostMessageW(a->main_wnd, WM_NULL, 0, 0);
     DestroyMenu(menu);
 }
 
@@ -424,8 +427,16 @@ static void tray_show_menu(App *a) {
 
 static void stop_pipeline(App *a) {
     InterlockedExchange(&a->det_stop, 1);
+    /* Clear here rather than relying on the thread: if CreateThread failed in
+     * start_pipeline, det_running would otherwise stay 1 forever and every
+     * Start affordance (tray menu, Ctrl+F8) would keep routing to Stop. */
+    InterlockedExchange(&a->det_running, 0);
     if (a->det_thread) {
-        WaitForSingleObject(a->det_thread, 2000);
+        /* Wait indefinitely. A bounded wait that timed out would close the
+         * handle and let us free the capture, detector, and overlay out from
+         * under a thread that is still using them. The loop's capture call
+         * has its own 200 ms timeout, so a live thread exits promptly. */
+        WaitForSingleObject(a->det_thread, INFINITE);
         CloseHandle(a->det_thread);
         a->det_thread = NULL;
     }
@@ -445,6 +456,13 @@ static void stop_pipeline(App *a) {
 }
 
 static int start_pipeline(App *a) {
+    /* Refuse to start over a pipeline that is still partly alive. After a
+     * device loss the thread has exited but capture/detector still exist
+     * until the queued WM_APP_DEVLOST is handled; starting in that window
+     * (Ctrl+F8, or the tray, from inside a modal loop) would re-init the
+     * detector and orphan the old capture thread and its COM objects. */
+    if (a->det_thread || a->capture || a->detector_ready) return -1;
+
     if (a->device_count <= 0) {
         set_status(a, L"No audio devices found.");
         return -1;
@@ -512,7 +530,7 @@ static int start_pipeline(App *a) {
     EnableWindow(a->btn_start, FALSE);
     EnableWindow(a->btn_stop,  TRUE);
     wchar_t buf[256];
-    swprintf(buf, 256, L"Listening (%s)  |  Ctrl+F10 to quit",
+    swprintf(buf, 256, L"Listening (%ls)  |  Ctrl+F10 to quit",
              p->display_name);
     set_status(a, buf);
     /* Start stats timer. */
@@ -723,8 +741,12 @@ static void on_command(App *a, WPARAM wp) {
             SetForegroundWindow(a->main_wnd);
         }
     } else if (id == IDM_TRAY_STARTSTOP) {
-        if (a->det_running) stop_pipeline(a);
-        else start_pipeline(a);
+        if (a->det_running) {
+            stop_pipeline(a);
+            KillTimer(a->main_wnd, 2);   /* match every other stop path */
+        } else {
+            start_pipeline(a);
+        }
     } else if (id == IDM_TRAY_EXIT) {
         PostMessageW(a->main_wnd, WM_CLOSE, 0, 0);
     }
@@ -797,13 +819,17 @@ static LRESULT CALLBACK main_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
             return 0;
         }
         case WM_APP_DEVLOST:
+            /* Fully settle state BEFORE the dialog. MessageBoxW runs a nested
+             * message loop, so hotkeys and tray commands are dispatched from
+             * inside it; anything done afterwards could stomp a pipeline the
+             * user started from within the modal loop. */
             stop_pipeline(a);
             KillTimer(hwnd, 2);
+            populate_devices(a);
             set_status(a, L"Audio device lost! Reconnect and click Start.");
             MessageBoxW(hwnd, L"The audio device was disconnected or became "
                         L"unavailable.\nPlease reconnect and click Start.",
                         APP_TITLE, MB_ICONWARNING | MB_OK);
-            populate_devices(a);
             return 0;
         case WM_CLOSE:
             save_current_settings(a);
@@ -872,11 +898,27 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
         apply_settings(&g_app, &cfg);
     }
 
-    /* Register global hotkeys: Ctrl+F10=quit, Ctrl+F9=overlay, Ctrl+F8=start/stop */
-    RegisterHotKey(g_app.main_wnd, HK_QUIT,      MOD_CONTROL | MOD_NOREPEAT, VK_F10);
-    RegisterHotKey(g_app.main_wnd, HK_OVERLAY,    MOD_CONTROL | MOD_NOREPEAT, VK_F9);
-    RegisterHotKey(g_app.main_wnd, HK_STARTSTOP,  MOD_CONTROL | MOD_NOREPEAT, VK_F8);
-    g_app.hotkeys_registered = 1;
+    /* Register global hotkeys: Ctrl+F10=quit, Ctrl+F9=overlay, Ctrl+F8=start/stop.
+     * These can legitimately fail when another process already owns the combo,
+     * so report it rather than leaving the user wondering why nothing happens. */
+    {
+        BOOL ok_quit = RegisterHotKey(g_app.main_wnd, HK_QUIT,
+                                      MOD_CONTROL | MOD_NOREPEAT, VK_F10);
+        BOOL ok_ovl  = RegisterHotKey(g_app.main_wnd, HK_OVERLAY,
+                                      MOD_CONTROL | MOD_NOREPEAT, VK_F9);
+        BOOL ok_ss   = RegisterHotKey(g_app.main_wnd, HK_STARTSTOP,
+                                      MOD_CONTROL | MOD_NOREPEAT, VK_F8);
+        g_app.hotkeys_registered = (ok_quit || ok_ovl || ok_ss);
+        if (!ok_quit || !ok_ovl || !ok_ss) {
+            wchar_t hb[256];
+            swprintf(hb, 256,
+                     L"Hotkey conflict:%ls%ls%ls already in use by another app.",
+                     ok_quit ? L"" : L" Ctrl+F10",
+                     ok_ovl  ? L"" : L" Ctrl+F9",
+                     ok_ss   ? L"" : L" Ctrl+F8");
+            set_status(&g_app, hb);
+        }
+    }
 
     ShowWindow(g_app.main_wnd, show);
     UpdateWindow(g_app.main_wnd);

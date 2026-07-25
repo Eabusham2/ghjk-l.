@@ -14,15 +14,18 @@
  * Returns 1 on success. */
 static int settings_path(wchar_t *out, size_t cap) {
     wchar_t appdata[MAX_PATH];
-    if (SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK)
+    /* S_FALSE means "path is valid but does not exist yet" — still usable,
+     * since CreateDirectoryW below creates it. Testing != S_OK would reject
+     * that case and silently disable settings persistence entirely. */
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appdata)))
         return 0;
 
     wchar_t dir[MAX_PATH];
-    if (swprintf(dir, MAX_PATH, L"%s\\SoundOverlay", appdata) < 0)
+    if (swprintf(dir, MAX_PATH, L"%ls\\SoundOverlay", appdata) < 0)
         return 0;
     CreateDirectoryW(dir, NULL);   /* ignore "already exists" */
 
-    if (swprintf(out, cap, L"%s\\settings.ini", dir) < 0)
+    if (swprintf(out, cap, L"%ls\\settings.ini", dir) < 0)
         return 0;
     return 1;
 }

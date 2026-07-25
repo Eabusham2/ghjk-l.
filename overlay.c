@@ -124,10 +124,16 @@ static void draw_footstep(HDC dc, int x, int y, float str, float alpha, COLORREF
     int sz = (int)(10 + 4 * str);
     HBRUSH b = CreateSolidBrush(col);
     HPEN p = CreatePen(PS_SOLID, 2, col);
-    SelectObject(dc, b); SelectObject(dc, p);
+    HGDIOBJ ob = SelectObject(dc, b);
+    HGDIOBJ op = SelectObject(dc, p);
     Ellipse(dc, x - sz, y - sz, x + sz, y + sz);
     SelectObject(dc, GetStockObject(NULL_BRUSH));
     Ellipse(dc, x - sz - 5, y - sz - 5, x + sz + 5, y + sz + 5);
+    /* Deselect before deleting: DeleteObject fails on an object still
+     * selected into a DC, leaking the handle on every one of the ~30
+     * repaints per second until the process hits its GDI quota. */
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
     DeleteObject(b); DeleteObject(p);
 
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, col);
@@ -141,17 +147,18 @@ static void draw_gunshot(HDC dc, int x, int y, float str, float alpha, COLORREF 
     COLORREF col = fade_color(base, alpha);
     int sz = (int)(14 + 6 * str);
     HPEN p = CreatePen(PS_SOLID, 3, col);
-    SelectObject(dc, p);
+    HGDIOBJ op = SelectObject(dc, p);
     for (int k = 0; k < 8; ++k) {
         double a = k * 45.0 * M_PI / 180.0;
         MoveToEx(dc, x, y, NULL);
         LineTo(dc, x + (int)(sz * cos(a)), y + (int)(sz * sin(a)));
     }
-    DeleteObject(p);
     HBRUSH b = CreateSolidBrush(col);
-    SelectObject(dc, b);
+    HGDIOBJ ob = SelectObject(dc, b);
     Ellipse(dc, x - 4, y - 4, x + 4, y + 4);
-    DeleteObject(b);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(p); DeleteObject(b);
 
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, col);
     HFONT f = mk_label_font(); HGDIOBJ of = SelectObject(dc, f);
@@ -169,8 +176,11 @@ static void draw_vehicle(HDC dc, int x, int y, float str, float alpha, COLORREF 
     };
     HBRUSH b = CreateSolidBrush(col);
     HPEN p = CreatePen(PS_SOLID, 2, col);
-    SelectObject(dc, b); SelectObject(dc, p);
+    HGDIOBJ ob = SelectObject(dc, b);
+    HGDIOBJ op = SelectObject(dc, p);
     Polygon(dc, pts, 4);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
     DeleteObject(b); DeleteObject(p);
 
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, col);
@@ -185,18 +195,19 @@ static void draw_explosion(HDC dc, int x, int y, float str, float alpha, COLORRE
     int sz = (int)(16 + 7 * str);
     /* Multi-ray starburst (12 rays, alternating lengths) */
     HPEN p = CreatePen(PS_SOLID, 3, col);
-    SelectObject(dc, p);
+    HGDIOBJ op = SelectObject(dc, p);
     for (int k = 0; k < 12; ++k) {
         double a = k * 30.0 * M_PI / 180.0;
         int len = (k % 2 == 0) ? sz : (int)(sz * 0.6);
         MoveToEx(dc, x, y, NULL);
         LineTo(dc, x + (int)(len * cos(a)), y + (int)(len * sin(a)));
     }
-    DeleteObject(p);
     HBRUSH b = CreateSolidBrush(col);
-    SelectObject(dc, b);
+    HGDIOBJ ob = SelectObject(dc, b);
     Ellipse(dc, x - 6, y - 6, x + 6, y + 6);
-    DeleteObject(b);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(p); DeleteObject(b);
 
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, col);
     HFONT f = mk_label_font(); HGDIOBJ of = SelectObject(dc, f);

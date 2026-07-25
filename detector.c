@@ -68,8 +68,11 @@ int detector_init(SoundDetector *d, const GameProfile *profile, float sensitivit
 
     d->nf_foot = d->nf_gun = d->nf_gun_ultra = 1e-8f;
     d->nf_veh  = d->nf_expl = 1e-8f;
-    d->nf_flux_gun = d->nf_flux_foot = 1e-6f;
-    d->sensitivity = sensitivity > 0.05f ? sensitivity : 1.0f;
+    d->nf_flux_gun = d->nf_flux_foot = d->nf_flux_expl = 1e-6f;
+    /* Route through the setter so init and the live slider apply the exact
+     * same [0.1, 5.0] clamp; a persisted out-of-range value would otherwise
+     * survive init but be unreachable afterwards. */
+    detector_set_sensitivity(d, sensitivity);
 
     apply_profile_params(d, profile ? profile : profile_by_index(0));
 
@@ -103,7 +106,7 @@ void detector_apply_profile(SoundDetector *d, const GameProfile *p) {
     apply_profile_params(d, p);
     d->nf_foot = d->nf_gun = d->nf_gun_ultra = 1e-8f;
     d->nf_veh  = d->nf_expl = 1e-8f;
-    d->nf_flux_gun = d->nf_flux_foot = 1e-6f;
+    d->nf_flux_gun = d->nf_flux_foot = d->nf_flux_expl = 1e-6f;
     d->frame_count = 0;
 }
 
@@ -117,13 +120,36 @@ void detector_set_enable(SoundDetector *d, SoundEventKind kind, int on) {
     }
 }
 
+/* Map a frequency range to a half-open bin range [k0, k1).
+ *
+ * k0 is the first bin at or above f0 (ceil) and k1 is one past the bin
+ * containing f1 (floor + 1), so the band is covered without bleeding in a
+ * bin below f0 or dropping the bin at the top edge. Truncating both edges
+ * instead would shift every band down by up to one bin — e.g. the MW2
+ * 60-180 Hz footstep band would actually read 47-164 Hz, letting exactly
+ * the sub-50 Hz LFE content the profile is designed to exclude inflate the
+ * footstep noise floor.
+ *
+ * Bin 0 (DC) is always excluded: it carries the signal mean, not audio
+ * content, and would otherwise be half of a narrow sub-bass vehicle band.
+ * Returns 0 if the resulting range is empty. */
+static int band_bins(size_t bins, float bin_hz, float f0, float f1,
+                     size_t *out_k0, size_t *out_k1) {
+    if (f0 >= f1 || f1 <= 0.0f || bin_hz <= 0.0f) return 0;
+    size_t k0 = (size_t)ceilf(f0 / bin_hz);
+    size_t k1 = (size_t)floorf(f1 / bin_hz) + 1;
+    if (k0 < 1)    k0 = 1;
+    if (k1 > bins) k1 = bins;
+    if (k0 >= k1) return 0;
+    *out_k0 = k0;
+    *out_k1 = k1;
+    return 1;
+}
+
 static float band_power(const float *mag, size_t bins,
                         float bin_hz, float f0, float f1) {
-    if (f0 >= f1 || f1 <= 0) return 0.0f;
-    size_t k0 = (size_t)(f0 / bin_hz);
-    size_t k1 = (size_t)(f1 / bin_hz);
-    if (k1 > bins) k1 = bins;
-    if (k0 >= k1) return 0.0f;
+    size_t k0, k1;
+    if (!band_bins(bins, bin_hz, f0, f1, &k0, &k1)) return 0.0f;
     double s = 0.0;
     for (size_t k = k0; k < k1; ++k) s += (double)mag[k] * (double)mag[k];
     return (float)(s / (double)(k1 - k0));
@@ -131,11 +157,8 @@ static float band_power(const float *mag, size_t bins,
 
 static float band_flux(const float *prev, const float *curr, size_t bins,
                        float bin_hz, float f0, float f1) {
-    if (f0 >= f1 || f1 <= 0) return 0.0f;
-    size_t k0 = (size_t)(f0 / bin_hz);
-    size_t k1 = (size_t)(f1 / bin_hz);
-    if (k1 > bins) k1 = bins;
-    if (k0 >= k1) return 0.0f;
+    size_t k0, k1;
+    if (!band_bins(bins, bin_hz, f0, f1, &k0, &k1)) return 0.0f;
     double s = 0.0;
     for (size_t k = k0; k < k1; ++k) {
         float d = curr[k] - prev[k];
@@ -157,11 +180,8 @@ static float clamp_strength(float v) {
 static float band_pan(const float *Lre, const float *Lim,
                       const float *Rre, const float *Rim,
                       size_t bins, float bin_hz, float f0, float f1) {
-    if (f0 >= f1 || f1 <= 0) return 0.0f;
-    size_t k0 = (size_t)(f0 / bin_hz);
-    size_t k1 = (size_t)(f1 / bin_hz);
-    if (k1 > bins) k1 = bins;
-    if (k0 >= k1) return 0.0f;
+    size_t k0, k1;
+    if (!band_bins(bins, bin_hz, f0, f1, &k0, &k1)) return 0.0f;
     double el = 0.0, er = 0.0;
     for (size_t k = k0; k < k1; ++k) {
         el += (double)Lre[k] * Lre[k] + (double)Lim[k] * Lim[k];
@@ -226,6 +246,22 @@ int detector_analyze(SoundDetector *d,
     float flux_foot = band_flux(prev, curr, d->bins, bin_hz, d->foot_lo, d->foot_hi);
     float flux_expl = band_flux(prev, curr, d->bins, bin_hz, d->expl_lo, d->expl_hi);
 
+    /* Compute every detection ratio against the noise floors as they stood
+     * *before* this frame, then update the floors. Folding the current frame
+     * in first would make each event inflate its own reference: the ratio
+     * would collapse to p/((1-a)*nf_old + a*p), which is hard-capped at 1/a
+     * (only 40x for nf_alpha=0.025) no matter how loud the transient is —
+     * putting the louder profile thresholds within ~2x of an unreachable
+     * ceiling and silently killing detection at high sensitivity. */
+    float r_foot  = p_foot  / (d->nf_foot      + 1e-12f);
+    float r_gun   = p_gun   / (d->nf_gun       + 1e-12f);
+    float r_gun_u = p_gun_u / (d->nf_gun_ultra + 1e-12f);
+    float r_veh   = p_veh   / (d->nf_veh       + 1e-12f);
+    float r_expl  = p_expl  / (d->nf_expl      + 1e-12f);
+    float r_fluxG = flux_gun  / (d->nf_flux_gun  + 1e-12f);
+    float r_fluxF = flux_foot / (d->nf_flux_foot + 1e-12f);
+    float r_fluxE = flux_expl / (d->nf_flux_expl + 1e-12f);
+
     float a = d->nf_alpha;
     d->nf_foot      = (1.0f - a) * d->nf_foot      + a * p_foot;
     d->nf_gun       = (1.0f - a) * d->nf_gun       + a * p_gun;
@@ -234,13 +270,7 @@ int detector_analyze(SoundDetector *d,
     d->nf_expl      = (1.0f - a) * d->nf_expl      + a * p_expl;
     d->nf_flux_gun  = (1.0f - a) * d->nf_flux_gun  + a * flux_gun;
     d->nf_flux_foot = (1.0f - a) * d->nf_flux_foot + a * flux_foot;
-
-    float r_foot  = p_foot  / (d->nf_foot      + 1e-12f);
-    float r_gun   = p_gun   / (d->nf_gun       + 1e-12f);
-    float r_gun_u = p_gun_u / (d->nf_gun_ultra + 1e-12f);
-    float r_veh   = p_veh   / (d->nf_veh       + 1e-12f);
-    float r_expl  = p_expl  / (d->nf_expl      + 1e-12f);
-    float r_fluxG = flux_gun / (d->nf_flux_gun + 1e-12f);
+    d->nf_flux_expl = (1.0f - a) * d->nf_flux_expl + a * flux_expl;
 
     /* Warmup guard. */
     d->frame_count++;
@@ -275,7 +305,7 @@ int detector_analyze(SoundDetector *d,
     /* Explosion */
     if (d->enable_expl && emitted < max_events
         && r_expl > d->expl_thresh * s
-        && flux_expl > 0.0f
+        && r_fluxE > s
         && p_expl > 5e-4f
         && (now - d->last_expl_s) > d->expl_cooldown) {
         SoundEvent *e = &events[emitted++];
@@ -291,7 +321,7 @@ int detector_analyze(SoundDetector *d,
     /* Footstep */
     if (d->enable_foot && emitted < max_events
         && r_foot > d->foot_thresh * s
-        && flux_foot > 0.0f
+        && r_fluxF > s
         && p_foot > 4e-5f
         && p_foot > 1.4f * p_gun
         && (now - d->last_foot_s) > d->foot_cooldown) {

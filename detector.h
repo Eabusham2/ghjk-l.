@@ -45,6 +45,7 @@ typedef struct {
     float nf_expl;
     float nf_flux_gun;
     float nf_flux_foot;
+    float nf_flux_expl;
 
     double last_foot_s;
     double last_gun_s;
