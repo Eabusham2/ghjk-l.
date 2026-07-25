@@ -102,6 +102,17 @@ build.bat       MSVC build
 build-mingw.bat mingw-w64 build
 ```
 
+## Download a prebuilt .exe
+
+You don't have to build it yourself — GitHub Actions cross-compiles the
+executable on every push.
+
+- **Latest build**: Actions tab → newest **Build SoundOverlay** run →
+  **Artifacts** → `SoundOverlay` (artifacts expire after 90 days)
+- **Tagged release**: pushing a `v*` tag (e.g. `git tag v1.0 && git push
+  origin v1.0`) publishes a GitHub Release with `SoundOverlay.exe`
+  attached, giving a permanent download link
+
 ## Building
 
 ### MSVC (recommended)
