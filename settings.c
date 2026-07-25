@@ -4,7 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "shell32.lib")
+#endif
 
 #define APP_SECTION L"SoundOverlay"
 

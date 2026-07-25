@@ -4,8 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "user32.lib")
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -301,7 +303,9 @@ static LRESULT CALLBACK overlay_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 static void register_class_once(HINSTANCE inst) {
     static int done = 0;
     if (done) return;
-    WNDCLASSEXW wc = { sizeof(wc) };
+    WNDCLASSEXW wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.cbSize        = sizeof(wc);
     wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = overlay_wndproc;
     wc.hInstance     = inst;

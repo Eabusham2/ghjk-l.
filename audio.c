@@ -11,9 +11,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "avrt.lib")
+#endif
 
 /* ---- ring buffer for stereo float frames ---------------------------- */
 
@@ -27,13 +30,14 @@ typedef struct {
     HANDLE           data_event;
 } FrameRing;
 
-static void ring_init(FrameRing *r, size_t cap) {
+static int ring_init(FrameRing *r, size_t cap) {
     r->cap = cap;
     r->left  = (float *)calloc(cap, sizeof(float));
     r->right = (float *)calloc(cap, sizeof(float));
     r->wr = r->rd = 0;
     InitializeCriticalSection(&r->lock);
     r->data_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    return (r->left && r->right && r->data_event) ? 0 : -1;
 }
 
 static void ring_free(FrameRing *r) {
@@ -41,12 +45,6 @@ static void ring_free(FrameRing *r) {
     DeleteCriticalSection(&r->lock);
     if (r->data_event) CloseHandle(r->data_event);
     memset(r, 0, sizeof(*r));
-}
-
-static size_t ring_available(const FrameRing *r) {
-    /* writer - reader, wrap-aware via modular difference */
-    size_t wr = r->wr, rd = r->rd;
-    return (wr - rd);
 }
 
 static void ring_push(FrameRing *r, const float *l, const float *rr, size_t n) {
@@ -61,6 +59,13 @@ static void ring_push(FrameRing *r, const float *l, const float *rr, size_t n) {
     size_t avail = r->wr - r->rd;
     if (avail > r->cap) {
         r->rd = r->wr - r->cap;
+    }
+    /* Keep the free-running indices bounded so they never wrap size_t (which,
+     * with a non-power-of-two cap, would corrupt the physical % cap mapping).
+     * Subtracting a whole cap from both preserves wr-rd and every % cap slot. */
+    while (r->wr >= 2 * r->cap) {
+        r->wr -= r->cap;
+        r->rd -= r->cap;
     }
     LeaveCriticalSection(&r->lock);
     SetEvent(r->data_event);
@@ -283,8 +288,10 @@ static void downmix_to_stereo(const void *src, int is_float, int bits,
             r = channels > 1 ? ch[1] : ch[0];
         }
         /* Light soft clip. */
-        if (l >  1.5f) l =  1.5f; if (l < -1.5f) l = -1.5f;
-        if (r >  1.5f) r =  1.5f; if (r < -1.5f) r = -1.5f;
+        if (l >  1.5f) l =  1.5f;
+        if (l < -1.5f) l = -1.5f;
+        if (r >  1.5f) r =  1.5f;
+        if (r < -1.5f) r = -1.5f;
         dst_l[i] = l;
         dst_r[i] = r;
     }
@@ -306,6 +313,9 @@ static DWORD WINAPI audio_thread(LPVOID arg) {
     float               *mix_l = NULL;
     float               *mix_r = NULL;
     size_t               mix_cap = 0;
+    float               *res_l = NULL;
+    float               *res_r = NULL;
+    size_t               res_cap = 0;
 
     hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
                           &IID_IMMDeviceEnumerator, (void **)&en);
@@ -357,8 +367,9 @@ static DWORD WINAPI audio_thread(LPVOID arg) {
      * neighbour resample here to 48 kHz when needed to keep the rest
      * of the pipeline simple. */
     const UINT32 target_sr = AUDIO_SAMPLE_RATE;
-    double resample_ratio = (double)target_sr / (double)mf.samplerate;
-    double frac_accum = 0.0;
+    double src_phase = 0.0;   /* running source position carried across packets */
+    float  prev_l = 0.0f, prev_r = 0.0f;  /* last frame of previous packet */
+    int    have_prev = 0;
 
     while (!InterlockedCompareExchange(&c->stop_request, 0, 0)) {
         UINT32 packet = 0;
@@ -398,33 +409,57 @@ static DWORD WINAPI audio_thread(LPVOID arg) {
         if (mf.samplerate == (int)target_sr) {
             ring_push(&c->ring, mix_l, mix_r, frames);
         } else {
-            /* Compute output frames: floor(frames*ratio) with fractional carryover. */
-            double want_d = frames * resample_ratio + frac_accum;
-            size_t want = (size_t)want_d;
-            frac_accum = want_d - (double)want;
+            /* Linear resample with a source phase that carries across packets so
+             * there is no discontinuity or sample duplication at packet
+             * boundaries. src_phase is the (fractional) index into the *current*
+             * packet; a phase < 0 interpolates against the previous packet's
+             * last frame (prev_l/prev_r). */
+            double step = (double)mf.samplerate / (double)target_sr;
 
-            /* Reuse end of mix arrays if they fit, else malloc a scratch. */
-            static float *res_l = NULL, *res_r = NULL;
-            static size_t res_cap = 0;
-            if (res_cap < want) {
+            /* Upper bound on how many output frames this packet yields. */
+            size_t want_max = (size_t)((frames - src_phase) / step) + 2;
+            if (res_cap < want_max) {
                 free(res_l); free(res_r);
-                res_cap = want * 2 + 256;
+                res_cap = want_max * 2 + 256;
                 res_l = (float *)malloc(sizeof(float) * res_cap);
                 res_r = (float *)malloc(sizeof(float) * res_cap);
+                if (!res_l || !res_r) { hr = E_OUTOFMEMORY; break; }
             }
-            if (res_l && res_r) {
-                double step = 1.0 / resample_ratio;
-                for (size_t i = 0; i < want; ++i) {
-                    double src_pos = (double)i * step;
-                    size_t i0 = (size_t)src_pos;
-                    if (i0 >= frames) i0 = frames - 1;
-                    size_t i1 = i0 + 1 < frames ? i0 + 1 : i0;
-                    float t = (float)(src_pos - (double)i0);
-                    res_l[i] = mix_l[i0] * (1.0f - t) + mix_l[i1] * t;
-                    res_r[i] = mix_r[i0] * (1.0f - t) + mix_r[i1] * t;
+
+            size_t produced = 0;
+            while (src_phase < (double)frames) {
+                double fpos = src_phase;
+                int    i0   = (int)floor(fpos);
+                float  t    = (float)(fpos - (double)i0);
+                float  l0, r0, l1, r1;
+
+                if (i0 < 0) {                 /* between prev packet and this one */
+                    l0 = have_prev ? prev_l : mix_l[0];
+                    r0 = have_prev ? prev_r : mix_r[0];
+                } else {
+                    l0 = mix_l[i0];
+                    r0 = mix_r[i0];
                 }
-                ring_push(&c->ring, res_l, res_r, want);
+                int i1 = i0 + 1;
+                if (i1 < (int)frames) {
+                    l1 = mix_l[i1];
+                    r1 = mix_r[i1];
+                } else {                      /* clamp at packet end */
+                    l1 = mix_l[frames - 1];
+                    r1 = mix_r[frames - 1];
+                }
+                res_l[produced] = l0 * (1.0f - t) + l1 * t;
+                res_r[produced] = r0 * (1.0f - t) + r1 * t;
+                produced++;
+                src_phase += step;
             }
+            if (produced) ring_push(&c->ring, res_l, res_r, produced);
+
+            /* Carry leftover phase and this packet's last frame forward. */
+            src_phase -= (double)frames;
+            prev_l = mix_l[frames - 1];
+            prev_r = mix_r[frames - 1];
+            have_prev = 1;
         }
     }
 
@@ -437,6 +472,7 @@ fail:
     if (dev) IMMDevice_Release(dev);
     if (en)  IMMDeviceEnumerator_Release(en);
     free(mix_l); free(mix_r);
+    free(res_l); free(res_r);
 
     c->last_error = hr;
     InterlockedExchange(&c->running, 0);
@@ -453,7 +489,12 @@ AudioCapture *audio_capture_create(const wchar_t *device_id) {
     if (device_id) lstrcpynW(c->device_id, device_id, 256);
     c->init_done = CreateEventW(NULL, TRUE, FALSE, NULL);
     /* Ring big enough for ~1 second at 48 kHz. */
-    ring_init(&c->ring, AUDIO_SAMPLE_RATE);
+    if (ring_init(&c->ring, AUDIO_SAMPLE_RATE) != 0 || !c->init_done) {
+        ring_free(&c->ring);
+        if (c->init_done) CloseHandle(c->init_done);
+        free(c);
+        return NULL;
+    }
     return c;
 }
 
@@ -467,7 +508,11 @@ void audio_capture_destroy(AudioCapture *c) {
 
 int audio_capture_start(AudioCapture *c) {
     if (!c) return -1;
-    if (InterlockedCompareExchange(&c->running, 0, 0)) return 0;
+    /* Guard on the thread handle, not `running`: `running` is only set to 1
+     * inside the thread after device init (tens of ms), so guarding on it
+     * would let a second start() in that window spawn a duplicate thread and
+     * leak the first handle. `thread` is set here and cleared only in stop(). */
+    if (c->thread) return 0;
     c->stop_request = 0;
     c->last_error = S_OK;
     ResetEvent(c->init_done);
@@ -479,7 +524,11 @@ void audio_capture_stop(AudioCapture *c) {
     if (!c) return;
     InterlockedExchange(&c->stop_request, 1);
     if (c->thread) {
-        WaitForSingleObject(c->thread, 2000);
+        /* Wait indefinitely: the capture loop polls stop_request every <=3 ms,
+         * so a live thread exits promptly. A bounded wait that timed out would
+         * let destroy() free the ring/CS while the thread is still inside a
+         * stalled WASAPI call, causing a use-after-free on the next ring_push. */
+        WaitForSingleObject(c->thread, INFINITE);
         CloseHandle(c->thread);
         c->thread = NULL;
     }

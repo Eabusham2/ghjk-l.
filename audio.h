@@ -36,17 +36,14 @@ void          audio_capture_destroy(AudioCapture *c);
 int  audio_capture_start(AudioCapture *c);
 void audio_capture_stop(AudioCapture *c);
 
-/* Pull the next hop (AUDIO_BLOCK_FRAMES frames). Returns:
- *   1 on success (frames written to dst_left/dst_right),
+/* Pull the latest FFT-sized analysis window. Returns:
+ *   1 on success (window written to out_fft_left/out_fft_right),
  *   0 on timeout,
  *  -1 if the capture thread has died.
  *
- * dst_left/dst_right must each have AUDIO_BLOCK_FRAMES floats.
- * The function also writes the previous hop's context so the caller
- * can build a 2*HOP-sized FFT window with 50% overlap.
- *
- * out_fft_left / out_fft_right (size AUDIO_FFT_FRAMES) receive the
- * latest FFT-sized window (previous hop concatenated with current hop).
+ * out_fft_left / out_fft_right must EACH have AUDIO_FFT_FRAMES floats.
+ * On success they receive the most recent AUDIO_FFT_FRAMES samples and the
+ * reader advances by one AUDIO_BLOCK_FRAMES hop, giving 50% overlap.
  */
 int audio_capture_next_window(AudioCapture *c,
                               DWORD timeout_ms,

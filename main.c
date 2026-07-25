@@ -1,8 +1,12 @@
 /* SoundOverlay Launcher — full settings GUI with game profiles,
  * event log, detection toggles, system tray, and stats.
  */
+#ifndef UNICODE
 #define UNICODE
+#endif
+#ifndef _UNICODE
 #define _UNICODE
+#endif
 #define COBJMACROS
 
 #include <windows.h>
@@ -18,6 +22,7 @@
 #include "profiles.h"
 #include "settings.h"
 
+#ifdef _MSC_VER
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -27,6 +32,7 @@
 #pragma comment(linker, "\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
 processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+#endif
 
 #define APP_CLASS   L"SoundOverlayLauncher"
 #define APP_TITLE   L"SoundOverlay"
@@ -822,7 +828,9 @@ static LRESULT CALLBACK main_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
 /* ---- entry point ----------------------------------------------------- */
 
 static void register_main_class(HINSTANCE inst) {
-    WNDCLASSEXW wc = { sizeof(wc) };
+    WNDCLASSEXW wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.cbSize        = sizeof(wc);
     wc.lpfnWndProc   = main_wndproc;
     wc.hInstance     = inst;
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
